@@ -1,0 +1,16 @@
+[submodule "ignisdata/cdb"]
+	path = ignisdata/cdb
+	url = https://github.com/ProjectIgnis/BabelCDB.git
+	shallow = true
+[submodule "ignisdata/delta"]
+	path = ignisdata/delta
+	url = https://github.com/ProjectIgnis/DeltaPuppetOfStrings.git
+	shallow = true
+[submodule "ignisdata/scripts"]
+	path = ignisdata/scripts
+	url = https://github.com/ProjectIgnis/CardScripts.git
+	shallow = true
+[submodule "ignisdata/dist"]
+	path = ignisdata/dist
+	url = https://github.com/ProjectIgnis/Distribution.git
+	shallow = true

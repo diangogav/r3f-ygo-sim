@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body,
+html {
+  @apply bg-gray-800;
+}
+
+body,
+#root {
+  @apply h-screen w-full flex;
+}

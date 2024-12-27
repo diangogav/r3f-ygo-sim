@@ -1,0 +1,806 @@
+import createCore, {
+  OcgCardLoc,
+  OcgCardLocPos,
+  OcgCoreSync,
+  OcgDuelHandle,
+  OcgDuelMode,
+  OcgHintType,
+  OcgLocPos,
+  OcgLocation,
+  OcgMessage,
+  OcgMessageType,
+  OcgNewCardInfo,
+  OcgPosition,
+  OcgProcessResult,
+  OcgResponse,
+  OcgResponseType,
+  SelectIdleCMDAction,
+  ocgLogTypeString,
+  ocgMessageTypeStrings,
+  ocgPhaseString,
+} from "ocgcore-wasm";
+import coreUrl from "ocgcore-wasm/lib/ocgcore.sync.wasm?url";
+import type { LoadDeckResponse, LoadDeckResponseCard } from "../handler";
+import { arrayShuffle } from "../lib/array-shuffle";
+import {
+  CardAction,
+  CardFieldPos,
+  CardInfo,
+  CardLocation,
+  CardPos,
+  getCardInPos,
+  useGameStore,
+} from "./state";
+import { xoshiro256ss } from "../lib/xoshiro256ss";
+
+let ocg: OcgCoreSync | null = null;
+const libPromise = initializeCore();
+
+const loadedData = {
+  cards: new Map<number, LoadDeckResponseCard>(),
+  scripts: new Map<string, string>(),
+  strings: {
+    system: new Map<number, string>(),
+    counter: new Map<number, string>(),
+    setname: new Map<number, string>(),
+    victory: new Map<number, string>(),
+  },
+};
+
+export async function createGame(signal?: AbortSignal) {
+  const [deckData] = await Promise.all([
+    fetch("/api/loadDeck", {
+      method: "post",
+      body: JSON.stringify({
+        player1: { deck: testDeck },
+        player2: { deck: testDeck },
+      }),
+      headers: { "content-type": "application/json" },
+      signal,
+    }).then((r) => r.json() as Promise<LoadDeckResponse>),
+    libPromise,
+  ]);
+
+  if (signal?.aborted || !ocg) {
+    return null;
+  }
+
+  loadedData.cards = new Map<number, (typeof deckData.cards)[number]>(
+    deckData.cards.map((c) => [c.id, c])
+  );
+  loadedData.scripts = new Map(deckData.scripts);
+  loadedData.strings = {
+    system: new Map(deckData.strings.system),
+    counter: new Map(deckData.strings.counter),
+    setname: new Map(deckData.strings.setname),
+    victory: new Map(deckData.strings.victory),
+  };
+
+  const seed: [bigint, bigint, bigint, bigint] = [
+    12388289193n,
+    2239912n,
+    144949391n,
+    34443414123n,
+  ];
+  const duel = ocg.createDuel({
+    cardReader(card) {
+      const data = loadedData.cards.get(card)?.data;
+      if (!data) {
+        return null;
+      }
+      return {
+        ...data,
+        race: BigInt(data.race),
+      };
+    },
+    scriptReader(name) {
+      // console.log("load script", name);
+      return loadedData.scripts.get(name) ?? "";
+    },
+    errorHandler(type, text) {
+      console.log(ocgLogTypeString.get(type), text);
+    },
+    flags: OcgDuelMode.MODE_MR5,
+    seed,
+    team1: { drawCountPerTurn: 1, startingDrawCount: 5, startingLP: 8000 },
+    team2: { drawCountPerTurn: 1, startingDrawCount: 5, startingLP: 8000 },
+  });
+  if (!duel) {
+    throw new Error("error creating duel");
+  }
+
+  ocg.loadScript(
+    duel,
+    "constant.lua",
+    loadedData.scripts.get("constant.lua") ?? ""
+  );
+  ocg.loadScript(
+    duel,
+    "utility.lua",
+    loadedData.scripts.get("utility.lua") ?? ""
+  );
+
+  const player1Deck = shufflePile(deckData.player1.deck.main, seed);
+  loadPile(duel, 0, OcgLocation.DECK, player1Deck);
+  loadPile(duel, 0, OcgLocation.EXTRA, deckData.player1.deck.extra);
+  const player2Deck = shufflePile(deckData.player2.deck.main, seed);
+  loadPile(duel, 1, OcgLocation.DECK, player2Deck);
+  loadPile(duel, 1, OcgLocation.EXTRA, deckData.player2.deck.extra);
+
+  useGameStore.setState({
+    players: [
+      {
+        field: {
+          deck: setupPile(
+            0,
+            ocg.duelQueryCount(duel, 0, OcgLocation.DECK),
+            "deck"
+          ),
+          extra: setupPile(
+            0,
+            ocg.duelQueryCount(duel, 0, OcgLocation.EXTRA),
+            "extra"
+          ),
+          banish: [],
+          grave: [],
+          extraMonsterZone: [null, null],
+          fieldZone: null,
+          hand: [],
+          mainMonsterZone: [null, null, null, null, null],
+          spellZone: [null, null, null, null, null],
+        },
+      },
+      {
+        field: {
+          deck: setupPile(
+            1,
+            ocg.duelQueryCount(duel, 1, OcgLocation.DECK),
+            "deck"
+          ),
+          extra: setupPile(
+            1,
+            ocg.duelQueryCount(duel, 1, OcgLocation.EXTRA),
+            "extra"
+          ),
+          banish: [],
+          grave: [],
+          extraMonsterZone: [null, null],
+          fieldZone: null,
+          hand: [],
+          mainMonsterZone: [null, null, null, null, null],
+          spellZone: [null, null, null, null, null],
+        },
+      },
+    ],
+  });
+
+  ocg.startDuel(duel);
+
+  gameInstance = duel;
+  return duel;
+}
+
+function loadPile(
+  duel: OcgDuelHandle,
+  player: 0 | 1,
+  location: OcgLocation,
+  cards: number[]
+) {
+  const base: OcgNewCardInfo = {
+    code: 0,
+    team: player,
+    duelist: 0,
+    controller: player,
+    location,
+    position: OcgPosition.FACEDOWN_ATTACK,
+    sequence: 0,
+  };
+  cards.forEach((c) => {
+    base.code = c;
+    ocg!.duelNewCard(duel, base);
+  });
+}
+
+function shufflePile(deck: number[], state: [bigint, bigint, bigint, bigint]) {
+  const next = xoshiro256ss(state);
+  return arrayShuffle([...deck], next);
+}
+
+function convertPosition(o: OcgPosition): CardInfo["position"] | null {
+  if (o & OcgPosition.FACEUP_ATTACK) {
+    return "up_atk";
+  }
+  if (o & OcgPosition.FACEUP_DEFENSE) {
+    return "up_def";
+  }
+  if (o & OcgPosition.FACEDOWN_ATTACK) {
+    return "down_atk";
+  }
+  if (o & OcgPosition.FACEDOWN_DEFENSE) {
+    return "down_def";
+  }
+  return null;
+}
+
+function convertLocation({
+  controller,
+  location,
+  sequence,
+  overlay_sequence,
+}: Omit<OcgCardLocPos, "position" | "code">): CardPos | null {
+  switch (location) {
+    case OcgLocation.DECK:
+      return {
+        controller: controller as 0 | 1,
+        location: "deck",
+        sequence,
+        overlay: null,
+      };
+    case OcgLocation.HAND:
+      return {
+        controller: controller as 0 | 1,
+        location: "hand",
+        sequence,
+        overlay: null,
+      };
+    case OcgLocation.MZONE:
+      if (0 <= sequence && sequence < 5) {
+        return {
+          controller: controller as 0 | 1,
+          location: "mainMonsterZone",
+          sequence,
+          overlay: null,
+        };
+      }
+      if (sequence === 5 || sequence === 6) {
+        return {
+          controller: controller as 0 | 1,
+          location: "extraMonsterZone",
+          sequence: sequence - 5,
+          overlay: null,
+        };
+      }
+      return null;
+    case OcgLocation.SZONE:
+      if (0 <= sequence && sequence < 5) {
+        return {
+          controller: controller as 0 | 1,
+          location: "spellZone",
+          sequence,
+          overlay: null,
+        };
+      }
+      if (sequence === 5) {
+        return {
+          controller: controller as 0 | 1,
+          location: "fieldZone",
+          sequence: 0,
+          overlay: null,
+        };
+      }
+      return null;
+    case OcgLocation.GRAVE:
+      return {
+        controller: controller as 0 | 1,
+        location: "grave",
+        sequence,
+        overlay: null,
+      };
+    case OcgLocation.REMOVED:
+      return {
+        controller: controller as 0 | 1,
+        location: "banish",
+        sequence,
+        overlay: null,
+      };
+    case OcgLocation.EXTRA:
+      return {
+        controller: controller as 0 | 1,
+        location: "extra",
+        sequence,
+        overlay: null,
+      };
+    case OcgLocation.FZONE:
+      return {
+        controller: controller as 0 | 1,
+        location: "fieldZone",
+        sequence: 0,
+        overlay: null,
+      };
+    default:
+      return null;
+  }
+}
+
+export function convertGameLocation({
+  controller,
+  location,
+  sequence,
+  overlay,
+}: CardPos): Omit<OcgCardLoc, "code"> {
+  switch (location) {
+    case "mainMonsterZone":
+      return { controller, location: OcgLocation.MZONE, sequence };
+    case "extraMonsterZone":
+      return {
+        controller,
+        location: OcgLocation.MZONE,
+        sequence: sequence + 5,
+      };
+    case "spellZone":
+      return { controller, location: OcgLocation.SZONE, sequence: sequence };
+    case "fieldZone":
+      return { controller, location: OcgLocation.SZONE, sequence: 5 };
+    // case "pendulumZone":
+    //   return { controller, location: OcgLocation.MZONE, sequence: sequence + 6 };
+    case "deck":
+      return { controller, location: OcgLocation.DECK, sequence };
+    case "extra":
+      return { controller, location: OcgLocation.EXTRA, sequence };
+    case "grave":
+      return { controller, location: OcgLocation.GRAVE, sequence };
+    case "hand":
+      return { controller, location: OcgLocation.HAND, sequence };
+    case "banish":
+      return { controller, location: OcgLocation.REMOVED, sequence };
+  }
+}
+
+const messageQueue: OcgMessage[] = [];
+
+export function processMessageQueue(): null | number {
+  if (!ocg || !gameInstance) {
+    return null;
+  }
+
+  if (messageQueue.length === 0) {
+    const duel = gameInstance;
+    while (true) {
+      const res = ocg.duelProcess(duel);
+      for (const m of ocg.duelGetMessage(duel)) {
+        messageQueue.push(m);
+      }
+      if (res !== OcgProcessResult.CONTINUE) {
+        break;
+      }
+    }
+  }
+
+  const m = messageQueue.shift();
+  if (!m) {
+    return null;
+  }
+
+  switch (m.type) {
+    case OcgMessageType.START: {
+      console.log("Duel started");
+      return 0;
+    }
+    case OcgMessageType.DRAW: {
+      console.log(`Player ${m.player + 1} draws ${m.drawn.length} card(s)`);
+      for (const drawn of m.drawn) {
+        const topCard = useGameStore.getState().players[m.player].field.deck[0];
+        useGameStore.getState().moveCard(
+          {
+            ...topCard,
+            code: drawn.code,
+            position:
+              drawn.position === OcgPosition.FACEDOWN ? "down_atk" : "up_atk",
+          },
+          {
+            controller: m.player as 0 | 1,
+            location: "hand",
+            sequence: Infinity,
+            overlay: null,
+          }
+        );
+      }
+      return 0;
+    }
+    case OcgMessageType.NEW_TURN: {
+      console.log(`NEW TURN: Player ${m.player + 1}`);
+      return 0;
+    }
+    case OcgMessageType.NEW_PHASE: {
+      console.log(`NEW PHASE: ${ocgPhaseString.get(m.phase)}`);
+      return 0;
+    }
+    case OcgMessageType.SELECT_IDLECMD: {
+      console.log(`Select idle command for Player ${m.player + 1}`);
+      const actions: CardAction[] = [];
+      for (const [index, action] of m.activates.entries()) {
+        actions.push({
+          kind: "activate",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_ACTIVATE,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      for (const [index, action] of m.summons.entries()) {
+        actions.push({
+          kind: "summon",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_SUMMON,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      for (const [index, action] of m.special_summons.entries()) {
+        actions.push({
+          kind: "specialSummon",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_SPECIAL_SUMMON,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      for (const [index, action] of m.monster_sets.entries()) {
+        actions.push({
+          kind: "setMonster",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_MONSTER_SET,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      for (const [index, action] of m.spell_sets.entries()) {
+        actions.push({
+          kind: "setSpell",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_SPELL_SET,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      for (const [index, action] of m.pos_changes.entries()) {
+        actions.push({
+          kind: "changePos",
+          response: {
+            type: OcgResponseType.SELECT_IDLECMD,
+            action: SelectIdleCMDAction.SELECT_POS_CHANGE,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      useGameStore.getState().setActions(actions);
+      return null;
+    }
+    case OcgMessageType.MOVE: {
+      const state = useGameStore.getState();
+      const source = convertLocation(m.from)!;
+      const dest = convertLocation(m.to)!;
+      const destPosition = convertPosition(m.to.position)!;
+
+      const cardLoc = ({ location: l, sequence: s, controller: c }: CardPos) =>
+        `${l}[${s}] (player ${c + 1}) `;
+
+      console.log(`Moving card from ${cardLoc(source)} to ${cardLoc(dest)}`);
+
+      const card = getCardInPos(state, source)!;
+      state.moveCard(
+        {
+          ...card,
+          code: dest.location === "deck" ? 0 : m.card,
+          position: destPosition,
+        },
+        dest
+      );
+      return 1;
+    }
+    case OcgMessageType.SET: {
+      console.log(`Card was set.`);
+      return 0;
+    }
+    case OcgMessageType.SHUFFLE_HAND: {
+      console.log(`Shuffle hand of plaeyr ${m.player + 1}`);
+      const state = useGameStore.getState();
+      state.reorderHand(m.player as 0 | 1, m.cards);
+      return 0;
+    }
+    case OcgMessageType.SHUFFLE_DECK: {
+      console.log(`Shuffle deck for player ${m.player + 1}`);
+      return 0;
+    }
+    case OcgMessageType.SUMMONING: {
+      return 0;
+    }
+    case OcgMessageType.SUMMONED: {
+      return 0;
+    }
+    case OcgMessageType.CHAINING: {
+      return 0;
+    }
+    case OcgMessageType.CHAINED: {
+      return 0;
+    }
+    case OcgMessageType.CHAIN_SOLVING: {
+      return 0;
+    }
+    case OcgMessageType.CHAIN_SOLVED: {
+      return 0;
+    }
+    case OcgMessageType.CHAIN_END: {
+      return 0;
+    }
+    case OcgMessageType.CHAIN_NEGATED: {
+      return 0;
+    }
+    case OcgMessageType.CHAIN_DISABLED: {
+      return 0;
+    }
+    case OcgMessageType.SELECT_CHAIN: {
+      console.log(`Select chain for Player ${m.player + 1}`);
+      if (m.selects.length === 0) {
+        return 0;
+      }
+
+      const actions: CardAction[] = [];
+      for (const [index, action] of m.selects.entries()) {
+        actions.push({
+          kind: "activate",
+          response: {
+            type: OcgResponseType.SELECT_CHAIN,
+            index,
+          },
+          pos: convertLocation(action)!,
+        });
+      }
+      useGameStore.getState().setActions(actions);
+      return null;
+    }
+    case OcgMessageType.SELECT_YESNO: {
+      const title = getHint(m.description);
+      console.log(`Select Yes/No message for player ${m.player + 1}: ${title}`);
+      useGameStore.getState().openDialog({
+        title: title ?? `${m.description}`,
+        type: "yesno",
+      });
+      return null;
+    }
+    case OcgMessageType.SELECT_EFFECTYN: {
+      let text;
+      if (m.description === 0n) {
+        const event_string = "EVENT"; // set with last event
+        const formatted = sprintf(
+          getSysString(200) ?? "",
+          getCardName(m.code) ?? `${m.code}`,
+          formatLocation(m.location, m.sequence) ?? "?"
+        );
+        text = `${event_string}\n${formatted}`;
+      } else if (m.description === 221n) {
+        const event_string = "EVENT"; // set with last event
+        const formatted = sprintf(
+          getSysString(221) ?? "",
+          getCardName(m.code) ?? `${m.code}`,
+          formatLocation(m.location, m.sequence) ?? "?"
+        );
+        text = `${event_string}\n${formatted}\n${getSysString(223) ?? ""}`;
+      } else {
+        const formatted = sprintf(
+          getHint(m.description) ?? "",
+          getCardName(m.code) ?? `${m.code}`
+        );
+        text = formatted;
+      }
+
+      console.log(`Select Yes/No message for player ${m.player + 1}: ${text}`);
+
+      useGameStore.getState().openDialog({
+        title: text,
+        type: "effectyn",
+      });
+      return null;
+    }
+    case OcgMessageType.SELECT_CARD: {
+      console.log(`Select cards for player ${m.player + 1}.`);
+      useGameStore.getState().openDialog({
+        title: `Select ${m.min} to ${m.max} card(s).`,
+        type: "cards",
+        min: m.min,
+        max: m.max,
+        canCancel: m.can_cancel,
+        cards: m.selects.map((s) => ({
+          code: s.code,
+          ...convertLocation(s)!,
+          position: convertPosition(s.position)!,
+        })),
+      });
+      return null;
+    }
+    case OcgMessageType.SELECT_PLACE: {
+      console.log(`Select place for player ${m.player + 1}.`);
+      useGameStore.getState().setFieldSelect({
+        positions: parseFieldMask(m.field_mask),
+        count: m.count,
+      });
+      return null;
+    }
+    case OcgMessageType.HINT: {
+      switch (m.hint_type) {
+        case OcgHintType.MESSAGE: {
+          const msg = getHint(m.hint);
+          console.log(`Hint message for player ${m.player + 1}: ${msg}`);
+          break;
+        }
+        case OcgHintType.EVENT: {
+          const msg = getHint(m.hint);
+          console.log(`Hint event for player ${m.player + 1}: ${msg}`);
+          break;
+        }
+        case OcgHintType.SELECTMSG: {
+          const msg = getHint(m.hint);
+          console.log(`Hint select for player ${m.player + 1}: ${msg}`);
+          break;
+        }
+        default: {
+          const type = Object.entries(OcgHintType).find(
+            (c) => c[1] === m.hint_type
+          )?.[0];
+          console.log(`unknown hint type ${type ?? m.hint_type}`, m);
+          break;
+        }
+      }
+      return 0;
+    }
+    case OcgMessageType.CARD_HINT: {
+      const msg = getHint(m.description);
+      console.log(`Hint message for player ${m.controller + 1}: ${msg}`);
+      return 0;
+    }
+    case OcgMessageType.CONFIRM_CARDS: {
+      console.log(`Confirm ${m.cards.length} cards for player ${m.player + 1}`);
+      return 0;
+    }
+    case OcgMessageType.RETRY: {
+      return null;
+    }
+    default: {
+      console.log(`unknown message ${ocgMessageTypeStrings.get(m.type)}`, m);
+      return null;
+    }
+  }
+}
+
+function sprintf(f: string, ...args: string[]): string {
+  let index = 0;
+  return f.replace(/%(ls)/g, () => args[index++]);
+}
+
+function parseFieldMask(mask: number) {
+  function parseFieldMaskPlayer(
+    m: number,
+    controller: 0 | 1,
+    places: CardFieldPos[]
+  ) {
+    for (let i = 0; i < 7; i++) {
+      // 5 mm, 2 em
+      if ((m & 1) === 0) {
+        if (i >= 5) {
+          places.push({
+            controller,
+            location: "extraMonsterZone",
+            sequence: i - 5,
+          });
+        } else {
+          places.push({ controller, location: "mainMonsterZone", sequence: i });
+        }
+      }
+      m >>= 1;
+    }
+    m >>= 1;
+    for (let i = 0; i < 8; i++) {
+      // 5 st, 1 fs, 2 p
+      if ((m & 1) === 0) {
+        if (i >= 6) {
+          // places.push({ controller, location: "pendulumZone", sequence: i - 6 });
+        } else if (i >= 5) {
+          places.push({ controller, location: "fieldZone", sequence: 0 });
+        } else {
+          places.push({ controller, location: "spellZone", sequence: i });
+        }
+      }
+      m >>= 1;
+    }
+  }
+
+  const places: CardFieldPos[] = [];
+  parseFieldMaskPlayer(mask & 0xffff, 0, places);
+  parseFieldMaskPlayer(mask >> 16, 0, places);
+  return places;
+}
+
+export function sendResponse(resp: OcgResponse) {
+  if (!ocg || !gameInstance) {
+    return;
+  }
+  useGameStore.getState().setActions([]);
+  useGameStore.getState().closeDialog();
+  useGameStore.getState().setSelectedHandCard(null);
+  useGameStore.getState().setFieldSelect(null);
+  ocg.duelSetResponse(gameInstance, resp);
+}
+
+function getHint(inCode: bigint): string | null {
+  const code = Number(inCode >> 20n);
+  const stringId = Number(inCode & 0xfffffn);
+  if (code == 0) {
+    return loadedData.strings.system.get(stringId) ?? null;
+  }
+  return loadedData.cards.get(code)?.strings.at(stringId) ?? null;
+}
+
+function getSysString(stringId: number): string | null {
+  return loadedData.strings.system.get(stringId) ?? null;
+}
+
+function getCardName(code: number): string | null {
+  return loadedData.cards.get(code)?.name ?? null;
+}
+
+function formatLocation(location: OcgLocation, sequence: number) {
+  if (location === OcgLocation.SZONE) {
+    if (sequence < 5) return getSysString(1003);
+    else if (sequence === 5) return getSysString(1008);
+    else return getSysString(1009);
+  }
+  let filter = 1;
+  let i = 1000;
+  while (filter !== 0x100 && filter != location) {
+    i++;
+    filter <<= 1;
+  }
+  if (filter == location) {
+    return getSysString(i);
+  } else {
+    return null;
+  }
+}
+
+function setupPile(
+  controller: 0 | 1,
+  length: number,
+  loc: CardPos["location"]
+) {
+  return Array.from(
+    { length },
+    (_, i) =>
+      ({
+        code: 0,
+        id: crypto.randomUUID(),
+        pos: { controller, location: loc, sequence: i, overlay: null },
+        status: "placed",
+        position: "down_atk",
+      } satisfies CardInfo)
+  );
+}
+
+async function initializeCore() {
+  ocg = await createCore({
+    locateFile(url, scriptDirectory) {
+      if (url.endsWith(".wasm")) {
+        return coreUrl;
+      }
+      return scriptDirectory + url;
+    },
+    sync: true,
+  });
+  const [maj, min] = ocg.getVersion();
+  console.log(`core initialized (v${maj}.${min})`);
+}
+
+const testDeck = `ydke://tjqcAboo9gE1NEsAzViuBKQDWAOyvQgASZnbAJxM2wHHmj8EOH1oBNG96ATxQEMCrEnLAnBgLwHx7vkEhJAHAfL9qgLFLs4EMHQKAdEhSQGmm/QBX/EEAigmIQJFpa8COUBYBMap2gTrAfsE7yX+BFINmQPOdFcDzBFIBE6DmARWPuoEjUogAIl3cQB6gEoCkFB1AwzjPQQDVa0FiTJ3BA==!urOuAYRE7ANHyAYF+feGBYFjZAU5hwwAGaKKAdENRgGxWQIFxfrlArsqYgSpHIYDkSbIAOsr/wJJkjQD!!`;
+
+export let gameInstance: OcgDuelHandle | null = null;
+export const gameInstancePromise = createGame();
