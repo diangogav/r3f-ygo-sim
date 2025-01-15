@@ -1,14 +1,16 @@
 import {
   Html,
+  Hud,
   OrthographicCamera,
   PerspectiveCamera,
+  Text,
   useTexture,
 } from "@react-three/drei";
 import { Canvas, extend } from "@react-three/fiber";
 import { EffectComposer } from "@react-three/postprocessing";
 import {
   AnimatePresence,
-  AnimationPlaybackControls,
+  AnimationSequence,
   ValueAnimationTransition,
   animate,
   motion as htmlMotion,
@@ -31,6 +33,7 @@ import {
 } from "react";
 import { twc } from "react-twc";
 import {
+  Color,
   Euler,
   Group,
   Mesh,
@@ -38,14 +41,14 @@ import {
   Object3D,
   PlaneGeometry,
   PointLight,
-  Vector3
+  Vector3,
 } from "three";
 import { MeshTestMaterial } from "../components/three/test-material";
 import { cn } from "../lib/cn";
 import {
   convertGameLocation,
   gameInstancePromise,
-  processMessageQueue,
+  runSimulatorStep,
   sendResponse,
 } from "./runner";
 import {
@@ -59,6 +62,7 @@ import {
   isPileLocation,
   useGameStore,
 } from "./state";
+import { DebugMenu } from "./ui/debug";
 
 const degToRad = Math.PI / 180;
 
@@ -84,8 +88,9 @@ export function Game() {
       if (cancel) {
         return;
       }
-      console.log("loaded!");
-      runProcessMessageQueue();
+      // console.log("loaded!");
+      useGameStore.getState().queueEvent({ event: { type: "start" } });
+      runSimulatorStep();
     })();
 
     return () => {
@@ -93,13 +98,9 @@ export function Game() {
     };
   }, []);
 
-  const playerField = useGameStore(useCallback((s) => s.players[0], []));
-
-  const setSelectedHandCard = useGameStore(
-    useCallback((s) => s.setSelectedHandCard, [])
-  );
-
-  const selectField = useGameStore(useCallback((s) => s.selectField, []));
+  const playerField = useGameStore((s) => s.players[0]);
+  const setSelectedHandCard = useGameStore((s) => s.setSelectedHandCard);
+  const selectField = useGameStore((s) => s.selectField);
 
   useEffect(() => {
     setSelectedHandCard(null);
@@ -115,20 +116,9 @@ export function Game() {
           resize={{ scroll: false, offsetSize: true }}
         >
           <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
-          <OrthographicCamera
-            left={-10}
-            right={10}
-            bottom={-10}
-            top={10}
-            position={[0, 0, 10]}
-          />
           <group
-            onClick={(e) => {
-              setSelectedHandCard(null);
-            }}
-            onPointerMissed={(e) => {
-              setSelectedHandCard(null);
-            }}
+            onClick={() => setSelectedHandCard(null)}
+            onPointerMissed={() => setSelectedHandCard(null)}
           >
             <mesh position={[0, 0, 0]} rotation={[-20 * degToRad, 0, 0]}>
               <meshStandardMaterial color="#fff" />
@@ -146,34 +136,61 @@ export function Game() {
             )}
           </group>
           <Effects />
+          <TurnState />
         </Canvas>
       </GameWrapper>
-      <div className="absolute top-4 right-4">
-        <button
-          className="bg-orange-500 hover:bg-orange-400 p-2 uppercase font-bold"
-          onClick={() => runProcessMessageQueue()}
-        >
-          Next
-        </button>
-      </div>
+      <DebugMenu />
     </>
   );
 }
 
-let processTimeout = -1;
-function runProcessMessageQueue() {
-  clearTimeout(processTimeout);
-  while (true) {
-    const res = processMessageQueue();
-    if (res === null) {
-      return;
-    }
-    if (res === 0) {
-      continue;
-    }
-    processTimeout = window.setTimeout(runProcessMessageQueue, res * 1000);
-    break;
-  }
+function TurnState({}: {}) {
+  const width = 10;
+  const height = width * (9 / 16);
+
+  const event = useGameStore((s) => s.events.at(0));
+  const currentEventRef = useRef<null | string>(null);
+  currentEventRef.current = event?.id ?? null;
+
+  return (
+    <Hud renderPriority={1}>
+      <OrthographicCamera
+        makeDefault
+        left={-width}
+        right={width}
+        bottom={-height}
+        top={height}
+        position={[0, 0, 10]}
+      />
+      <AnimatePresence>
+        {event && event.event.type === "start" && (
+          <motion.group
+            key={event.id}
+            initial={{ x: 20 }}
+            animate={{ x: 0 }}
+            exit={{ x: -20 }}
+            transition={{ duration: 2 }}
+            onAnimationComplete={() => {
+              if (event.id === currentEventRef.current) {
+                useGameStore.getState().nextEvent();
+              }
+            }}
+          >
+            <Suspense>
+              <Text
+                color="black"
+                anchorX="center"
+                anchorY="middle"
+                fontWeight={800}
+              >
+                DUEL START!
+              </Text>
+            </Suspense>
+          </motion.group>
+        )}
+      </AnimatePresence>
+    </Hud>
+  );
 }
 
 type RenderSelectFieldProps = {
@@ -182,28 +199,44 @@ type RenderSelectFieldProps = {
 };
 
 function RenderSelectField({ positions, count }: RenderSelectFieldProps) {
-  const [selected, setSelected] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set<number>());
+
+  const onConfirm = (set: Set<number>) => {
+    const places = Array.from(set.values(), (index) =>
+      convertGameLocation({ ...positions[index], overlay: null })
+    );
+    sendResponse({
+      type: OcgResponseType.SELECT_PLACE,
+      places: places.map(({ controller, location, sequence }) => ({
+        player: controller,
+        location,
+        sequence,
+      })),
+    });
+    runSimulatorStep();
+  };
+
+  // TODO: implement partial selection and finish
+
   return (
     <Suspense>
-      {positions.map((pos, i) => (
+      {positions.map((pos, index) => (
         <RenderSelectFieldSlot
-          key={i}
+          key={index}
           pos={pos}
-          selected={selected.has(i)}
+          selected={selected.has(index)}
           onSelect={() => {
-            const p = convertGameLocation({ ...pos, overlay: null });
-            if (count === 1) {
-              sendResponse({
-                type: OcgResponseType.SELECT_PLACE,
-                places: [
-                  {
-                    player: p.controller,
-                    location: p.location,
-                    sequence: p.sequence,
-                  },
-                ],
-              });
-              runProcessMessageQueue();
+            const newSelected = new Set(selected.values());
+            if (newSelected.has(index)) {
+              newSelected.delete(index);
+            } else {
+              newSelected.add(index);
+            }
+
+            if (count === 1 && newSelected.size === 1) {
+              onConfirm(newSelected);
+            } else {
+              setSelected(newSelected);
             }
           }}
         />
@@ -266,7 +299,7 @@ function Effects() {
 }
 
 function RenderDialog() {
-  const dialog = useGameStore(useCallback((s) => s.dialog, []));
+  const dialog = useGameStore((s) => s.dialog);
 
   return (
     <AnimatePresence>
@@ -360,7 +393,7 @@ function DialogSelectCard({
               type: OcgResponseType.SELECT_CARD,
               indicies: [...selected.values()],
             });
-            runProcessMessageQueue();
+            runSimulatorStep();
           }}
           aria-disabled={!canContinue}
         >
@@ -387,7 +420,7 @@ function DialogSelectYesNo({ type }: DialogSelectYesNoProps) {
           : OcgResponseType.SELECT_EFFECTYN,
       yes,
     });
-    runProcessMessageQueue();
+    runSimulatorStep();
   }, []);
 
   return (
@@ -396,162 +429,6 @@ function DialogSelectYesNo({ type }: DialogSelectYesNoProps) {
       <Button onClick={() => handleClick(false)}>No</Button>
     </div>
   );
-}
-
-function usePrevious<T>(v: T): T | undefined {
-  const ref = useRef<T | undefined>(undefined);
-  useEffect(() => {
-    ref.current = v;
-  }, [v]);
-  return ref.current;
-}
-
-function useCardPositionAnimations({ pos, position }: CardInfo) {
-  const { controller, location, sequence, overlay } = pos;
-  const fieldState = useGameStore(
-    useCallback((s) => s.players[controller], [controller])
-  );
-
-  const prevLocation = usePrevious(location) ?? null;
-  const prevController = usePrevious(controller) ?? null;
-  const prevSequence = usePrevious(sequence) ?? null;
-  const prevOverlay = usePrevious(overlay) ?? null;
-  const prevPos: CardPos | null =
-    prevController !== null
-      ? {
-          controller: prevController,
-          location: prevLocation!,
-          sequence: prevSequence!,
-          overlay: prevOverlay!,
-        }
-      : null;
-  const prevPosition = usePrevious(position) ?? null;
-
-  const mPosX = useMotionValue(0);
-  const mPosY = useMotionValue(0);
-  const mPosZ = useMotionValue(0);
-  const mRotX = useMotionValue(0);
-  const mRotY = useMotionValue(0);
-  const mRotZ = useMotionValue(0);
-
-  useEffect(() => {
-    let anims: AnimationPlaybackControls[] = [];
-
-    const vec = new Vector3();
-    const vecFinal = new Vector3();
-    const rot = new Euler();
-    const rotFinal = new Euler();
-
-    const faceDown = position === "down_atk" || position === "down_def";
-    const defense = position === "down_def" || position === "up_def";
-
-    if (isFieldLocation(location)) {
-      const [[posX, posY, posZ], [rotX, rotY, rotZ]] = fieldFinalPosition(
-        pos,
-        fieldState
-      )!;
-      vec.set(posX, posY, posZ);
-      rot.set(rotX, rotY, rotZ);
-
-      vecFinal.copy(vec);
-      vecFinal.applyEuler(fieldEuler[controller]);
-
-      rotFinal.copy(rot);
-
-      if (faceDown) {
-        rotFinal.y += 180 * degToRad;
-      }
-      if (defense) {
-        rotFinal.z += 90 * degToRad;
-      }
-
-      rotFinal.x += fieldEuler[controller].x;
-      rotFinal.y += fieldEuler[controller].y;
-      rotFinal.z += fieldEuler[controller].z;
-    } else if (location === "hand") {
-      const [posX, posY, posZ] = handPosition(pos, fieldState);
-      vec.set(posX, posY, posZ);
-      rot.set(0, 0, 0);
-      vecFinal.copy(vec);
-      rotFinal.copy(rot);
-
-      if (faceDown && controller === 1) {
-        rotFinal.y += 180 * degToRad;
-      }
-    }
-
-    if (prevLocation && isSlamAnimation(prevLocation, location)) {
-      const vecSlam = new Vector3(vec.x, vec.y, vec.z);
-      const rotSlam = new Euler(rot.x, rot.y, rot.z);
-
-      vecSlam.z += 2;
-
-      vecSlam.applyEuler(fieldEuler[controller]);
-      rotSlam.x += fieldEuler[controller].x;
-      rotSlam.y += fieldEuler[controller].y;
-      rotSlam.z += fieldEuler[controller].z;
-
-      anims.push(
-        animate([
-          [mPosX, vecSlam.x, fieldTransitionConfig],
-          [mPosX, vecFinal.x, fieldTransitionConfig],
-        ])
-      );
-      anims.push(
-        animate([
-          [mPosY, vecSlam.y, fieldTransitionConfig],
-          [mPosY, vecFinal.y, fieldTransitionConfig],
-        ])
-      );
-      anims.push(
-        animate([
-          [mPosZ, vecSlam.z, fieldTransitionConfig],
-          [mPosZ, vecFinal.z, fieldTransitionConfig],
-        ])
-      );
-      anims.push(
-        animate([
-          [mRotX, rotSlam.x, fieldTransitionConfig],
-          [mRotX, rotFinal.x, fieldTransitionConfig],
-        ])
-      );
-      anims.push(
-        animate([
-          [mRotY, rotSlam.y, fieldTransitionConfig],
-          [mRotY, rotFinal.y, fieldTransitionConfig],
-        ])
-      );
-      anims.push(
-        animate([
-          [mRotZ, rotSlam.z, fieldTransitionConfig],
-          [mRotZ, rotFinal.z, fieldTransitionConfig],
-        ])
-      );
-    } else if (prevController === null) {
-      mPosX.jump(vecFinal.x);
-      mPosY.jump(vecFinal.y);
-      mPosZ.jump(vecFinal.z);
-      mRotX.jump(rotFinal.x);
-      mRotY.jump(rotFinal.y);
-      mRotZ.jump(rotFinal.z);
-    } else {
-      anims.push(animate(mPosX, vecFinal.x, fieldTransitionConfig));
-      anims.push(animate(mPosY, vecFinal.y, fieldTransitionConfig));
-      anims.push(animate(mPosZ, vecFinal.z, fieldTransitionConfig));
-      anims.push(animate(mRotX, rotFinal.x, fieldTransitionConfig));
-      anims.push(animate(mRotY, rotFinal.y, fieldTransitionConfig));
-      anims.push(animate(mRotZ, rotFinal.z, fieldTransitionConfig));
-    }
-
-    return () => {
-      anims.forEach((a) => a.stop());
-    };
-  }, [location, controller, sequence, position, fieldState]);
-
-  return [
-    [mPosX, mPosY, mPosZ],
-    [mRotX, mRotY, mRotZ],
-  ] as const;
 }
 
 const fieldTransitionConfig = {
@@ -599,120 +476,161 @@ const fieldEuler = [
   new Euler(-20 * degToRad, 0, 180 * degToRad),
 ] as const;
 
-// const fieldTransform = [
-//   new Matrix4().makeRotationFromEuler(fieldEuler[0]),
-//   new Matrix4().makeRotationFromEuler(fieldEuler[1]),
-// ] as const;
+const getCardPosition = (() => {
+  const vec = new Vector3();
+  const vecFinal = new Vector3();
+  const rot = new Euler();
+  const rotFinal = new Euler();
 
-const finalPosition = new Vector3();
-const finalRotation = new Euler();
+  return function getCardPosition(
+    { pos, position }: CardInfo,
+    fieldState: PlayerState
+  ) {
+    const { controller, location } = pos;
 
-function fieldFinalPosition(
-  { controller, sequence, location }: CardPos,
-  playerField: PlayerState
-) {
-  switch (location) {
-    case "deck": {
-      const pileSize = playerField.field.deck.length;
-      finalPosition.set(7.5, -6, (pileSize - sequence) * 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
+    let faceDown = position === "down_atk" || position === "down_def";
+    const defense = position === "down_def" || position === "up_def";
+
+    if (isFieldLocation(location)) {
+      const [[posX, posY, posZ], [rotX, rotY, rotZ]] =
+        getCardLocalFieldPosition(pos, fieldState)!;
+      vec.set(posX, posY, posZ);
+      rot.set(rotX, rotY, rotZ);
+
+      vecFinal.copy(vec);
+      vecFinal.applyEuler(fieldEuler[controller]);
+      rotFinal.copy(rot);
+
+      if (faceDown) {
+        rotFinal.y += 180 * degToRad;
+      }
+      if (defense) {
+        rotFinal.z += 90 * degToRad;
+      }
+
+      rotFinal.x += fieldEuler[controller].x;
+      rotFinal.y += fieldEuler[controller].y;
+      rotFinal.z += fieldEuler[controller].z;
+    } else if (location === "hand") {
+      const [posX, posY, posZ] = handPosition(pos, fieldState);
+      vec.set(posX, posY, posZ);
+      rot.set(0, 0, 0);
+      vecFinal.copy(vec);
+      rotFinal.copy(rot);
+
+      if (faceDown && controller === 1) {
+        rotFinal.y += 180 * degToRad;
+      }
     }
-    case "extra": {
-      const pileSize = playerField.field.extra.length;
-      finalPosition.set(-7.5, -6, (pileSize - sequence) * 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
+
+    return [
+      [vecFinal.x, vecFinal.y, vecFinal.z],
+      [rotFinal.x, rotFinal.y, rotFinal.z],
+    ] as const;
+  };
+})();
+
+const getCardLocalFieldPosition = (() => {
+  const position = new Vector3();
+  const rotation = new Euler();
+
+  return function getCardLocalFieldPosition(
+    { sequence, location }: CardPos,
+    playerField: PlayerState
+  ) {
+    switch (location) {
+      case "deck": {
+        const pileSize = playerField.field.deck.length;
+        position.set(7.5, -6, (pileSize - sequence) * 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "extra": {
+        const pileSize = playerField.field.extra.length;
+        position.set(-7.5, -6, (pileSize - sequence) * 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "spellZone": {
+        position.set((sequence - 2) * 2.5, -6, 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "mainMonsterZone": {
+        position.set((sequence - 2) * 2.5, -3, 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "fieldZone": {
+        position.set(-7.5, -3, 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "grave": {
+        const pileSize = playerField.field.deck.length;
+        position.set(7.5, -3, (pileSize - sequence) * 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "banish": {
+        const pileSize = playerField.field.deck.length;
+        position.set(7.5, 0, (pileSize - sequence) * 0.01);
+        rotation.set(0, 0, 90 * degToRad);
+        break;
+      }
+      default: {
+        return null;
+      }
     }
-    case "spellZone": {
-      finalPosition.set((sequence - 2) * 2.5, -6, 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
-    }
-    case "mainMonsterZone": {
-      finalPosition.set((sequence - 2) * 2.5, -3, 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
-    }
-    case "fieldZone": {
-      finalPosition.set(-7.5, -3, 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
-    }
-    case "grave": {
-      const pileSize = playerField.field.deck.length;
-      finalPosition.set(7.5, -3, (pileSize - sequence) * 0.01);
-      finalRotation.set(0, 0, 0);
-      break;
-    }
-    case "banish": {
-      const pileSize = playerField.field.deck.length;
-      finalPosition.set(7.5, 0, (pileSize - sequence) * 0.01);
-      finalRotation.set(0, 0, 90 * degToRad);
-      break;
-    }
-    default: {
-      return null;
-    }
-  }
+    return [
+      [position.x, position.y, position.z],
+      [rotation.x, rotation.y, rotation.z],
+    ] as const;
+  };
+})();
+
+function useComputeCardPosition(card: CardInfo) {
+  const {
+    pos: { controller, location, overlay, sequence },
+    position,
+  } = card;
+
+  const fieldState = useGameStore((s) => s.players[controller]);
+
+  const mPosX = useMotionValue(0);
+  const mPosY = useMotionValue(0);
+  const mPosZ = useMotionValue(0);
+  const mRotX = useMotionValue(0);
+  const mRotY = useMotionValue(0);
+  const mRotZ = useMotionValue(0);
+
+  useEffect(() => {
+    const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
+      card,
+      fieldState
+    );
+    mPosX.jump(posX);
+    mPosY.jump(posY);
+    mPosZ.jump(posZ);
+    mRotX.jump(rotX);
+    mRotY.jump(rotY);
+    mRotZ.jump(rotZ);
+  }, [controller, location, overlay, sequence, position]);
+
   return [
-    [finalPosition.x, finalPosition.y, finalPosition.z],
-    [finalRotation.x, finalRotation.y, finalRotation.z],
+    [mPosX, mPosY, mPosZ],
+    [mRotX, mRotY, mRotZ],
   ] as const;
 }
 
-type RenderCardProps = {
-  card: CardInfo;
-  wrapperRef: RefObject<HTMLDivElement>;
-};
+function useHandOffset({ pos: { controller, location, sequence } }: CardInfo) {
+  const playerField = useGameStore((s) => s.players[controller]);
+  const selectedHandCard = useGameStore((s) => s.selectedHandCard);
 
-function RenderCard({ card, wrapperRef }: RenderCardProps) {
-  let {
-    status,
-    position,
-    pos: { location, controller, sequence },
-  } = card;
+  const [hover, updateHover] = useState(false);
 
   const isOwnHand = controller === 0 && location === "hand";
-
-  if (isOwnHand) {
-    position = "up_atk";
-  }
-
-  const [hover, setHover] = useState(false);
-
-  const playerField = useGameStore(
-    useCallback((s) => s.players[controller], [controller])
-  );
-  const actions = useGameStore(useCallback((s) => s.actions, []));
-  const selectedHandCard = useGameStore(
-    useCallback((s) => s.selectedHandCard, [])
-  );
-  const setSelectedHandCard = useGameStore(
-    useCallback((s) => s.setSelectedHandCard, [])
-  );
-
   const selected = isOwnHand && selectedHandCard === sequence;
-
-  const matchingActions = useMemo(() => {
-    return actions.filter(({ pos }) => {
-      if (pos.controller !== controller) {
-        return false;
-      }
-      if (
-        location === pos.location &&
-        pos.location !== "hand" &&
-        isPileLocation(pos.location)
-      ) {
-        return sequence === 0; // only show for the first card of the pile
-      }
-      return pos.location === location && pos.sequence === sequence;
-    });
-  }, [actions, location, controller, sequence]);
-
-  if (matchingActions.length > 0) {
-    console.log(matchingActions);
-  }
 
   let handOffsetY = 0;
   let handOffsetZ = 0;
@@ -725,8 +643,8 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
     handOffsetZ = selected
       ? (handSize + 1) * 0.01
       : hover
-      ? handSize * 0.01
-      : 0;
+        ? handSize * 0.01
+        : 0;
   }
 
   const mHandOffsetY = useAnimatedValue(handOffsetY, {
@@ -742,13 +660,119 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
     duration: 0.15,
   });
 
+  return {
+    mHandOffsetY,
+    mHandOffsetZ,
+    mHandScale,
+    hover,
+    updateHover,
+  };
+}
+
+interface RenderCardProps {
+  card: CardInfo;
+  wrapperRef: RefObject<HTMLDivElement>;
+}
+
+function RenderCard({ card, wrapperRef }: RenderCardProps) {
+  let {
+    pos: { location, controller, sequence },
+  } = card;
+
+  const setSelectedHandCard = useGameStore((s) => s.setSelectedHandCard);
+
+  const isOwnHand = controller === 0 && location === "hand";
+
+  const { mHandOffsetY, mHandOffsetZ, mHandScale, updateHover } =
+    useHandOffset(card);
+
   const [[mPosX, mPosY, mPosZ], [mRotX, mRotY, mRotZ]] =
-    useCardPositionAnimations(card);
+    useComputeCardPosition(card);
+
+  const currentEvent = useGameStore((s) => s.events.at(0));
+
+  useEffect(() => {
+    if (!currentEvent) {
+      return;
+    }
+    // animate drawn card
+
+    if (currentEvent.event.type === "draw" && location === "deck") {
+      const draws =
+        controller === 0
+          ? currentEvent.event.player1
+          : currentEvent.event.player2;
+
+      if (sequence < draws.length) {
+        const newCard =
+          currentEvent.nextState.players[controller].field.hand.find(
+            (x) => x.id === card.id
+          ) ?? card;
+
+        const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
+          newCard,
+          currentEvent.nextState.players[controller]
+        );
+
+        const offset = Math.random() * 0.5;
+        const speed = 0.3;
+
+        const animation = animate([
+          [mPosX, posX, { duration: speed, at: offset }],
+          [mPosZ, posZ, { duration: speed, at: offset }],
+          [mRotX, rotX, { duration: speed, at: offset }],
+          [mRotY, rotY, { duration: speed, at: offset }],
+          [mRotZ, rotZ, { duration: speed, at: offset }],
+          ...(controller === 0
+            ? ([
+                [mPosY, posY + 3, { duration: speed, at: offset }],
+                [mHandScale, 1.1, { duration: speed, at: offset }],
+                [mPosY, posY, { duration: speed, at: offset + speed * 2 }],
+                [mHandScale, 1, { duration: speed, at: offset + speed * 2 }],
+              ] as AnimationSequence)
+            : ([
+                [mPosY, posY, { duration: speed, at: offset }],
+              ] as AnimationSequence)),
+        ]);
+
+        return () => animation.cancel();
+      }
+    }
+    // animate cards in hand
+    if (currentEvent.event.type === "draw" && location === "hand") {
+      const draws =
+        controller === 0
+          ? currentEvent.event.player1
+          : currentEvent.event.player2;
+      if (draws.length > 0) {
+        const newCard =
+          currentEvent.nextState.players[controller].field.hand.find(
+            (x) => x.id === card.id
+          ) ?? card;
+
+        const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
+          newCard,
+          currentEvent.nextState.players[controller]
+        );
+
+        const animation = animate([
+          [mPosX, posX, { duration: 0.5 }],
+          [mPosY, posY, { duration: 0.5 }],
+          [mPosZ, posZ, { duration: 0.5 }],
+          [mRotX, rotX, { duration: 0.5 }],
+          [mRotY, rotY, { duration: 0.5 }],
+          [mRotZ, rotZ, { duration: 0.5 }],
+        ]);
+
+        return () => animation.cancel();
+      }
+    }
+  }, [currentEvent?.id]);
 
   const x = useTransform<number, number>([mPosX], ([x1]) => x1);
   const y = useTransform<number, number>(
     [mPosY, mHandOffsetY],
-    ([y1, handOffsetY]) => y1 + handOffsetY
+    ([y1, y2]) => y1 + y2
   );
   const z = useTransform<number, number>(
     [mPosZ, mHandOffsetZ],
@@ -770,26 +794,64 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
       scale-x={scale}
       scale-y={scale}
     >
-      {card.code > 0 && (
-        <Suspense>
-          <RenderCardFront
-            card={card}
-            onPointerOver={(e) => {
-              setHover(true);
-              e.stopPropagation();
-            }}
-            onPointerOut={() => {
-              setHover(false);
-            }}
-            onClick={(e) => {
-              if (isOwnHand) {
-                setSelectedHandCard(sequence);
-                e.stopPropagation();
-              }
-            }}
-          />
-        </Suspense>
-      )}
+      <RenderCardFront
+        code={card.code}
+        onPointerOver={(e) => {
+          updateHover(true);
+          e.stopPropagation();
+        }}
+        onPointerOut={() => {
+          updateHover(false);
+        }}
+        onClick={(e) => {
+          if (isOwnHand) {
+            setSelectedHandCard(sequence);
+            e.stopPropagation();
+          }
+        }}
+      />
+      <RenderCardActions card={card} wrapperRef={wrapperRef} />
+      <Suspense>
+        <RenderCardBack />
+      </Suspense>
+    </motion.object3D>
+  );
+}
+
+interface RenderCardActionsProps {
+  card: CardInfo;
+  wrapperRef: RefObject<HTMLDivElement>;
+}
+
+function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
+  let {
+    pos: { location, controller, sequence },
+  } = card;
+
+  const actions = useGameStore((s) => s.actions);
+  const selectedHandCard = useGameStore((s) => s.selectedHandCard);
+
+  const isOwnHand = controller === 0 && location === "hand";
+  const selected = isOwnHand && selectedHandCard === sequence;
+
+  const matchingActions = useMemo(() => {
+    return actions.filter(({ pos }) => {
+      if (pos.controller !== controller) {
+        return false;
+      }
+      if (
+        location === pos.location &&
+        pos.location !== "hand" &&
+        isPileLocation(pos.location)
+      ) {
+        return sequence === 0; // only show for the first card of the pile
+      }
+      return pos.location === location && pos.sequence === sequence;
+    });
+  }, [actions, location, controller, sequence]);
+
+  return (
+    <>
       {selected && matchingActions.length > 0 && (
         <Html
           position={[0, cardScale / 2, 0]}
@@ -805,7 +867,7 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
                   onClick={() => {
                     if (c.response) {
                       sendResponse(c.response);
-                      runProcessMessageQueue();
+                      runSimulatorStep();
                     }
                   }}
                 >
@@ -819,36 +881,8 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
       <Suspense>
         <RenderCardOverlay actions={matchingActions} />
       </Suspense>
-      <Suspense>
-        <RenderCardBack />
-      </Suspense>
-    </motion.object3D>
+    </>
   );
-}
-
-function useAnimatedVecComponents(
-  vec: Vector3,
-  config: ValueAnimationTransition<number>
-) {
-  const vecXIn = vec.x;
-  const vecYIn = vec.y;
-  const vecZIn = vec.z;
-  const vecX = useMotionValue(vec.x);
-  const vecY = useMotionValue(vec.y);
-  const vecZ = useMotionValue(vec.z);
-
-  useEffect(() => {
-    const animX = animate(vecX, vecXIn, config);
-    const animY = animate(vecY, vecYIn, config);
-    const animZ = animate(vecZ, vecZIn, config);
-    return () => {
-      animX.stop();
-      animY.stop();
-      animZ.stop();
-    };
-  }, [vecXIn, vecYIn, vecZIn]);
-
-  return [vecX, vecY, vecZ];
 }
 
 function useAnimatedValue(
@@ -866,21 +900,29 @@ function useAnimatedValue(
 const cardScale = 2.5;
 
 type RenderCardFrontProps = {
-  card: CardInfo;
+  code: number;
 } & ComponentProps<typeof motion.mesh>;
 
-function RenderCardFront({ card, ...props }: RenderCardFrontProps) {
-  const [frontTexture] = useTexture([
-    getProxiedUrl(
-      `https://images.ygoprodeck.com/images/cards/${card.code}.jpg`
-    ),
-  ]);
+function RenderCardFront({ code, ...props }: RenderCardFrontProps) {
   return (
     <motion.mesh {...props}>
-      <meshStandardMaterial map={frontTexture} />
+      {code > 0 ? (
+        <Suspense fallback={<meshStandardMaterial color={Color.NAMES.grey} />}>
+          <CardTextureMaterial code={code} />
+        </Suspense>
+      ) : (
+        <meshStandardMaterial color={Color.NAMES.grey} />
+      )}
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
     </motion.mesh>
   );
+}
+
+function CardTextureMaterial({ code }: { code: number }) {
+  const [frontTexture] = useTexture([
+    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`),
+  ]);
+  return <meshStandardMaterial map={frontTexture} />;
 }
 
 function RenderCardBack() {
@@ -955,7 +997,7 @@ const GameWrapper = forwardRef<HTMLDivElement, GameWrapperProps>(
 );
 
 function useAllCards() {
-  const players = useGameStore(useCallback((s) => s.players, []));
+  const players = useGameStore((s) => s.players);
   return useMemo(() => {
     const ret: CardInfo[] = [];
     for (const p of players) {

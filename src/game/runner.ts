@@ -1,3 +1,4 @@
+import { useTexture } from "@react-three/drei";
 import createCore, {
   OcgCardLoc,
   OcgCardLocPos,
@@ -5,11 +6,11 @@ import createCore, {
   OcgDuelHandle,
   OcgDuelMode,
   OcgHintType,
-  OcgLocPos,
   OcgLocation,
   OcgMessage,
   OcgMessageType,
   OcgNewCardInfo,
+  OcgPhase,
   OcgPosition,
   OcgProcessResult,
   OcgResponse,
@@ -17,26 +18,31 @@ import createCore, {
   SelectIdleCMDAction,
   ocgLogTypeString,
   ocgMessageTypeStrings,
-  ocgPhaseString,
 } from "ocgcore-wasm";
 import coreUrl from "ocgcore-wasm/lib/ocgcore.sync.wasm?url";
 import type { LoadDeckResponse, LoadDeckResponseCard } from "../handler";
 import { arrayShuffle } from "../lib/array-shuffle";
+import { xoshiro256ss } from "../lib/xoshiro256ss";
 import {
   CardAction,
   CardFieldPos,
   CardInfo,
-  CardLocation,
   CardPos,
+  PartialCardInfo,
+  cardPos,
+  eventfulGS,
   getCardInPos,
+  moveCard,
+  reorderHand,
   useGameStore,
 } from "./state";
-import { xoshiro256ss } from "../lib/xoshiro256ss";
 
 let ocg: OcgCoreSync | null = null;
 const libPromise = initializeCore();
 
-const loadedData = {
+// TODO: expose inside the state maybe?
+
+export const loadedData = {
   cards: new Map<number, LoadDeckResponseCard>(),
   scripts: new Map<string, string>(),
   strings: {
@@ -226,7 +232,6 @@ function convertLocation({
   controller,
   location,
   sequence,
-  overlay_sequence,
 }: Omit<OcgCardLocPos, "position" | "code">): CardPos | null {
   switch (location) {
     case OcgLocation.DECK:
@@ -316,7 +321,6 @@ export function convertGameLocation({
   controller,
   location,
   sequence,
-  overlay,
 }: CardPos): Omit<OcgCardLoc, "code"> {
   switch (location) {
     case "mainMonsterZone":
@@ -346,331 +350,428 @@ export function convertGameLocation({
   }
 }
 
-const messageQueue: OcgMessage[] = [];
+export function egs() {
+  const event = gs().events.at(-1);
+  return event?.nextState ?? eventfulGS(gs());
+}
 
-export function processMessageQueue(): null | number {
+export function gs() {
+  return useGameStore.getState();
+}
+
+export function runSimulatorStep() {
   if (!ocg || !gameInstance) {
     return null;
   }
 
-  if (messageQueue.length === 0) {
-    const duel = gameInstance;
-    while (true) {
-      const res = ocg.duelProcess(duel);
-      for (const m of ocg.duelGetMessage(duel)) {
-        messageQueue.push(m);
+  const messages: OcgMessage[] = [];
+  while (true) {
+    const res = ocg.duelProcess(gameInstance);
+    for (const m of ocg.duelGetMessage(gameInstance)) {
+      messages.push(m);
+    }
+    if (res !== OcgProcessResult.CONTINUE) {
+      break;
+    }
+  }
+
+  useGameStore.getState().appendDuelLog(...messages);
+
+  for (const m of messages) {
+    switch (m.type) {
+      case OcgMessageType.START: {
+        break;
       }
-      if (res !== OcgProcessResult.CONTINUE) {
+      case OcgMessageType.DRAW: {
+        const player = m.player as 0 | 1;
+        const cardUpdates: PartialCardInfo[] = m.drawn.map((drawn, index) => {
+          const card = egs().players[player].field.deck[index];
+          preloadTexture(drawn.code);
+          return { id: card.id, code: drawn.code };
+        });
+
+        gs().updateCards(cardUpdates);
+
+        let nextState = egs();
+        for (const drawn of m.drawn) {
+          const topCard = nextState.players[player].field.deck[0];
+          const position =
+            drawn.position === OcgPosition.FACEDOWN ? "down_atk" : "up_atk";
+          nextState = moveCard(
+            nextState,
+            { ...topCard, code: drawn.code, position },
+            cardPos(player, "hand", Infinity)
+          );
+        }
+
+        const lastEvent = gs().events.at(-1);
+        if (lastEvent?.event.type === "draw") {
+          gs().queueEvent(
+            {
+              event: {
+                type: "draw",
+                player1: [
+                  ...lastEvent.event.player1,
+                  ...(player === 0 ? m.drawn.map((c) => c.code) : []),
+                ],
+                player2: [
+                  ...lastEvent.event.player2,
+                  ...(player === 1 ? m.drawn.map((c) => c.code) : []),
+                ],
+              },
+              nextState,
+            },
+            true
+          );
+        } else {
+          gs().queueEvent({
+            event: {
+              type: "draw",
+              player1: player === 0 ? m.drawn.map((c) => c.code) : [],
+              player2: player === 1 ? m.drawn.map((c) => c.code) : [],
+            },
+            nextState,
+          });
+        }
+        break;
+      }
+      case OcgMessageType.NEW_TURN: {
+        console.log(`NEW TURN: Player ${m.player + 1}`);
+        break;
+      }
+      case OcgMessageType.NEW_PHASE: {
+        const nextState = egs();
+        switch (m.phase) {
+          case OcgPhase.DRAW:
+            nextState.phase = "dp";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.STANDBY:
+            nextState.phase = "sp";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.MAIN1:
+            nextState.phase = "m1";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.BATTLE_START:
+            nextState.phase = "bp1";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.BATTLE_STEP:
+            nextState.phase = "bp2";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.DAMAGE:
+            nextState.phase = "bp3";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.DAMAGE_CAL:
+            nextState.phase = "bp4";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.BATTLE:
+            nextState.phase = "bp5";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.MAIN2:
+            nextState.phase = "m2";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+          case OcgPhase.END:
+            nextState.phase = "ep";
+            gs().queueEvent({ event: { type: "phase" }, nextState });
+            break;
+        }
+        break;
+      }
+      case OcgMessageType.SELECT_IDLECMD: {
+        console.log(`Select idle command for Player ${m.player + 1}`);
+        const actions: CardAction[] = [];
+        for (const [index, action] of m.activates.entries()) {
+          actions.push({
+            kind: "activate",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_ACTIVATE,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        for (const [index, action] of m.summons.entries()) {
+          actions.push({
+            kind: "summon",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_SUMMON,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        for (const [index, action] of m.special_summons.entries()) {
+          actions.push({
+            kind: "specialSummon",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_SPECIAL_SUMMON,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        for (const [index, action] of m.monster_sets.entries()) {
+          actions.push({
+            kind: "setMonster",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_MONSTER_SET,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        for (const [index, action] of m.spell_sets.entries()) {
+          actions.push({
+            kind: "setSpell",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_SPELL_SET,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        for (const [index, action] of m.pos_changes.entries()) {
+          actions.push({
+            kind: "changePos",
+            response: {
+              type: OcgResponseType.SELECT_IDLECMD,
+              action: SelectIdleCMDAction.SELECT_POS_CHANGE,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        gs().setActions(actions);
+        break;
+      }
+      case OcgMessageType.MOVE: {
+        const source = convertLocation(m.from)!;
+        const dest = convertLocation(m.to)!;
+        const position = convertPosition(m.to.position)!;
+        const code = dest.location === "deck" ? 0 : m.card;
+
+        const cardLoc = ({
+          location: l,
+          sequence: s,
+          controller: c,
+        }: CardPos) => `${l}[${s}] (player ${c + 1}) `;
+
+        console.log(`Moving card from ${cardLoc(source)} to ${cardLoc(dest)}`);
+
+        const card = getCardInPos(gs(), source)!;
+        const nextState = moveCard(gs(), { ...card, code, position }, dest);
+        gs().queueEvent({
+          event: {
+            type: "move",
+            code,
+            source,
+            dest,
+          },
+          nextState,
+        });
+        return 1;
+      }
+      case OcgMessageType.SET: {
+        console.log(`Card was set.`);
+        break;
+      }
+      case OcgMessageType.SHUFFLE_HAND: {
+        console.log(`Shuffle hand of player ${m.player + 1}`);
+        reorderHand(gs(), m.player as 0 | 1, m.cards);
+        break;
+      }
+      case OcgMessageType.SHUFFLE_DECK: {
+        console.log(`Shuffle deck for player ${m.player + 1}`);
+        break;
+      }
+      case OcgMessageType.SUMMONING: {
+        break;
+      }
+      case OcgMessageType.SUMMONED: {
+        break;
+      }
+      case OcgMessageType.CHAINING: {
+        break;
+      }
+      case OcgMessageType.CHAINED: {
+        break;
+      }
+      case OcgMessageType.CHAIN_SOLVING: {
+        break;
+      }
+      case OcgMessageType.CHAIN_SOLVED: {
+        break;
+      }
+      case OcgMessageType.CHAIN_END: {
+        break;
+      }
+      case OcgMessageType.CHAIN_NEGATED: {
+        break;
+      }
+      case OcgMessageType.CHAIN_DISABLED: {
+        break;
+      }
+      case OcgMessageType.SELECT_CHAIN: {
+        console.log(`Select chain for Player ${m.player + 1}`);
+        if (m.selects.length === 0) {
+          break;
+        }
+
+        const actions: CardAction[] = [];
+        for (const [index, action] of m.selects.entries()) {
+          actions.push({
+            kind: "activate",
+            response: {
+              type: OcgResponseType.SELECT_CHAIN,
+              index,
+            },
+            pos: convertLocation(action)!,
+          });
+        }
+        gs().setActions(actions);
+        break;
+      }
+      case OcgMessageType.SELECT_YESNO: {
+        const title = getHint(m.description);
+        console.log(
+          `Select Yes/No message for player ${m.player + 1}: ${title}`
+        );
+        gs().openDialog({
+          title: title ?? `${m.description}`,
+          type: "yesno",
+        });
+        break;
+      }
+      case OcgMessageType.SELECT_EFFECTYN: {
+        let text;
+        if (m.description === 0n) {
+          const event_string = "EVENT"; // set with last event
+          const formatted = sprintf(
+            getSysString(200) ?? "",
+            getCardName(m.code),
+            formatLocation(m.location, m.sequence) ?? "?"
+          );
+          text = `${event_string}\n${formatted}`;
+        } else if (m.description === 221n) {
+          const event_string = "EVENT"; // set with last event
+          const formatted = sprintf(
+            getSysString(221) ?? "",
+            getCardName(m.code),
+            formatLocation(m.location, m.sequence) ?? "?"
+          );
+          text = `${event_string}\n${formatted}\n${getSysString(223) ?? ""}`;
+        } else {
+          const formatted = sprintf(
+            getHint(m.description) ?? "",
+            getCardName(m.code)
+          );
+          text = formatted;
+        }
+
+        console.log(
+          `Select Yes/No message for player ${m.player + 1}: ${text}`
+        );
+
+        gs().openDialog({
+          title: text,
+          type: "effectyn",
+        });
+        break;
+      }
+      case OcgMessageType.SELECT_CARD: {
+        console.log(`Select cards for player ${m.player + 1}.`);
+        gs().openDialog({
+          title: `Select ${m.min} to ${m.max} card(s).`,
+          type: "cards",
+          min: m.min,
+          max: m.max,
+          canCancel: m.can_cancel,
+          cards: m.selects.map((s) => ({
+            code: s.code,
+            ...convertLocation(s)!,
+            position: convertPosition(s.position)!,
+          })),
+        });
+        break;
+      }
+      case OcgMessageType.SELECT_PLACE: {
+        console.log(`Select place for player ${m.player + 1}.`);
+        gs().setFieldSelect({
+          positions: parseFieldMask(m.field_mask),
+          count: m.count,
+        });
+        break;
+      }
+      case OcgMessageType.HINT: {
+        switch (m.hint_type) {
+          case OcgHintType.MESSAGE: {
+            const msg = getHint(m.hint);
+            console.log(`Hint message for player ${m.player + 1}: ${msg}`);
+            break;
+          }
+          case OcgHintType.EVENT: {
+            const msg = getHint(m.hint);
+            console.log(`Hint event for player ${m.player + 1}: ${msg}`);
+            break;
+          }
+          case OcgHintType.SELECTMSG: {
+            const msg = getHint(m.hint);
+            console.log(`Hint select for player ${m.player + 1}: ${msg}`);
+            break;
+          }
+          default: {
+            const type = Object.entries(OcgHintType).find(
+              (c) => c[1] === m.hint_type
+            )?.[0];
+            console.log(`unknown hint type ${type ?? m.hint_type}`, m);
+            break;
+          }
+        }
+        break;
+      }
+      case OcgMessageType.CARD_HINT: {
+        const msg = getHint(m.description);
+        console.log(`Hint message for player ${m.controller + 1}: ${msg}`);
+        break;
+      }
+      case OcgMessageType.CONFIRM_CARDS: {
+        console.log(
+          `Confirm ${m.cards.length} cards for player ${m.player + 1}`
+        );
+        break;
+      }
+      case OcgMessageType.RETRY: {
+        break;
+      }
+      default: {
+        console.log(`unknown message ${ocgMessageTypeStrings.get(m.type)}`, m);
         break;
       }
     }
   }
+}
 
-  const m = messageQueue.shift();
-  if (!m) {
-    return null;
-  }
+function preloadTexture(code: number) {
+  useTexture.preload(
+    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`)
+  );
+}
 
-  switch (m.type) {
-    case OcgMessageType.START: {
-      console.log("Duel started");
-      return 0;
-    }
-    case OcgMessageType.DRAW: {
-      console.log(`Player ${m.player + 1} draws ${m.drawn.length} card(s)`);
-      for (const drawn of m.drawn) {
-        const topCard = useGameStore.getState().players[m.player].field.deck[0];
-        useGameStore.getState().moveCard(
-          {
-            ...topCard,
-            code: drawn.code,
-            position:
-              drawn.position === OcgPosition.FACEDOWN ? "down_atk" : "up_atk",
-          },
-          {
-            controller: m.player as 0 | 1,
-            location: "hand",
-            sequence: Infinity,
-            overlay: null,
-          }
-        );
-      }
-      return 0;
-    }
-    case OcgMessageType.NEW_TURN: {
-      console.log(`NEW TURN: Player ${m.player + 1}`);
-      return 0;
-    }
-    case OcgMessageType.NEW_PHASE: {
-      console.log(`NEW PHASE: ${ocgPhaseString.get(m.phase)}`);
-      return 0;
-    }
-    case OcgMessageType.SELECT_IDLECMD: {
-      console.log(`Select idle command for Player ${m.player + 1}`);
-      const actions: CardAction[] = [];
-      for (const [index, action] of m.activates.entries()) {
-        actions.push({
-          kind: "activate",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_ACTIVATE,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      for (const [index, action] of m.summons.entries()) {
-        actions.push({
-          kind: "summon",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_SUMMON,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      for (const [index, action] of m.special_summons.entries()) {
-        actions.push({
-          kind: "specialSummon",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_SPECIAL_SUMMON,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      for (const [index, action] of m.monster_sets.entries()) {
-        actions.push({
-          kind: "setMonster",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_MONSTER_SET,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      for (const [index, action] of m.spell_sets.entries()) {
-        actions.push({
-          kind: "setSpell",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_SPELL_SET,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      for (const [index, action] of m.pos_changes.entries()) {
-        actions.push({
-          kind: "changePos",
-          response: {
-            type: OcgResponseType.SELECT_IDLECMD,
-            action: SelectIdleCMDAction.SELECT_POS_CHANGE,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      useGameStore.getState().setActions(actions);
-      return null;
-    }
-    case OcgMessageType.MOVE: {
-      const state = useGameStore.getState();
-      const source = convertLocation(m.from)!;
-      const dest = convertLocation(m.to)!;
-      const destPosition = convertPosition(m.to.position)!;
-
-      const cardLoc = ({ location: l, sequence: s, controller: c }: CardPos) =>
-        `${l}[${s}] (player ${c + 1}) `;
-
-      console.log(`Moving card from ${cardLoc(source)} to ${cardLoc(dest)}`);
-
-      const card = getCardInPos(state, source)!;
-      state.moveCard(
-        {
-          ...card,
-          code: dest.location === "deck" ? 0 : m.card,
-          position: destPosition,
-        },
-        dest
-      );
-      return 1;
-    }
-    case OcgMessageType.SET: {
-      console.log(`Card was set.`);
-      return 0;
-    }
-    case OcgMessageType.SHUFFLE_HAND: {
-      console.log(`Shuffle hand of plaeyr ${m.player + 1}`);
-      const state = useGameStore.getState();
-      state.reorderHand(m.player as 0 | 1, m.cards);
-      return 0;
-    }
-    case OcgMessageType.SHUFFLE_DECK: {
-      console.log(`Shuffle deck for player ${m.player + 1}`);
-      return 0;
-    }
-    case OcgMessageType.SUMMONING: {
-      return 0;
-    }
-    case OcgMessageType.SUMMONED: {
-      return 0;
-    }
-    case OcgMessageType.CHAINING: {
-      return 0;
-    }
-    case OcgMessageType.CHAINED: {
-      return 0;
-    }
-    case OcgMessageType.CHAIN_SOLVING: {
-      return 0;
-    }
-    case OcgMessageType.CHAIN_SOLVED: {
-      return 0;
-    }
-    case OcgMessageType.CHAIN_END: {
-      return 0;
-    }
-    case OcgMessageType.CHAIN_NEGATED: {
-      return 0;
-    }
-    case OcgMessageType.CHAIN_DISABLED: {
-      return 0;
-    }
-    case OcgMessageType.SELECT_CHAIN: {
-      console.log(`Select chain for Player ${m.player + 1}`);
-      if (m.selects.length === 0) {
-        return 0;
-      }
-
-      const actions: CardAction[] = [];
-      for (const [index, action] of m.selects.entries()) {
-        actions.push({
-          kind: "activate",
-          response: {
-            type: OcgResponseType.SELECT_CHAIN,
-            index,
-          },
-          pos: convertLocation(action)!,
-        });
-      }
-      useGameStore.getState().setActions(actions);
-      return null;
-    }
-    case OcgMessageType.SELECT_YESNO: {
-      const title = getHint(m.description);
-      console.log(`Select Yes/No message for player ${m.player + 1}: ${title}`);
-      useGameStore.getState().openDialog({
-        title: title ?? `${m.description}`,
-        type: "yesno",
-      });
-      return null;
-    }
-    case OcgMessageType.SELECT_EFFECTYN: {
-      let text;
-      if (m.description === 0n) {
-        const event_string = "EVENT"; // set with last event
-        const formatted = sprintf(
-          getSysString(200) ?? "",
-          getCardName(m.code) ?? `${m.code}`,
-          formatLocation(m.location, m.sequence) ?? "?"
-        );
-        text = `${event_string}\n${formatted}`;
-      } else if (m.description === 221n) {
-        const event_string = "EVENT"; // set with last event
-        const formatted = sprintf(
-          getSysString(221) ?? "",
-          getCardName(m.code) ?? `${m.code}`,
-          formatLocation(m.location, m.sequence) ?? "?"
-        );
-        text = `${event_string}\n${formatted}\n${getSysString(223) ?? ""}`;
-      } else {
-        const formatted = sprintf(
-          getHint(m.description) ?? "",
-          getCardName(m.code) ?? `${m.code}`
-        );
-        text = formatted;
-      }
-
-      console.log(`Select Yes/No message for player ${m.player + 1}: ${text}`);
-
-      useGameStore.getState().openDialog({
-        title: text,
-        type: "effectyn",
-      });
-      return null;
-    }
-    case OcgMessageType.SELECT_CARD: {
-      console.log(`Select cards for player ${m.player + 1}.`);
-      useGameStore.getState().openDialog({
-        title: `Select ${m.min} to ${m.max} card(s).`,
-        type: "cards",
-        min: m.min,
-        max: m.max,
-        canCancel: m.can_cancel,
-        cards: m.selects.map((s) => ({
-          code: s.code,
-          ...convertLocation(s)!,
-          position: convertPosition(s.position)!,
-        })),
-      });
-      return null;
-    }
-    case OcgMessageType.SELECT_PLACE: {
-      console.log(`Select place for player ${m.player + 1}.`);
-      useGameStore.getState().setFieldSelect({
-        positions: parseFieldMask(m.field_mask),
-        count: m.count,
-      });
-      return null;
-    }
-    case OcgMessageType.HINT: {
-      switch (m.hint_type) {
-        case OcgHintType.MESSAGE: {
-          const msg = getHint(m.hint);
-          console.log(`Hint message for player ${m.player + 1}: ${msg}`);
-          break;
-        }
-        case OcgHintType.EVENT: {
-          const msg = getHint(m.hint);
-          console.log(`Hint event for player ${m.player + 1}: ${msg}`);
-          break;
-        }
-        case OcgHintType.SELECTMSG: {
-          const msg = getHint(m.hint);
-          console.log(`Hint select for player ${m.player + 1}: ${msg}`);
-          break;
-        }
-        default: {
-          const type = Object.entries(OcgHintType).find(
-            (c) => c[1] === m.hint_type
-          )?.[0];
-          console.log(`unknown hint type ${type ?? m.hint_type}`, m);
-          break;
-        }
-      }
-      return 0;
-    }
-    case OcgMessageType.CARD_HINT: {
-      const msg = getHint(m.description);
-      console.log(`Hint message for player ${m.controller + 1}: ${msg}`);
-      return 0;
-    }
-    case OcgMessageType.CONFIRM_CARDS: {
-      console.log(`Confirm ${m.cards.length} cards for player ${m.player + 1}`);
-      return 0;
-    }
-    case OcgMessageType.RETRY: {
-      return null;
-    }
-    default: {
-      console.log(`unknown message ${ocgMessageTypeStrings.get(m.type)}`, m);
-      return null;
-    }
-  }
+function getProxiedUrl(url: string) {
+  return `/api/proxy/${encodeURIComponent(url)}`;
 }
 
 function sprintf(f: string, ...args: string[]): string {
@@ -732,7 +833,7 @@ export function sendResponse(resp: OcgResponse) {
   ocg.duelSetResponse(gameInstance, resp);
 }
 
-function getHint(inCode: bigint): string | null {
+export function getHint(inCode: bigint): string | null {
   const code = Number(inCode >> 20n);
   const stringId = Number(inCode & 0xfffffn);
   if (code == 0) {
@@ -741,15 +842,15 @@ function getHint(inCode: bigint): string | null {
   return loadedData.cards.get(code)?.strings.at(stringId) ?? null;
 }
 
-function getSysString(stringId: number): string | null {
+export function getSysString(stringId: number): string | null {
   return loadedData.strings.system.get(stringId) ?? null;
 }
 
-function getCardName(code: number): string | null {
-  return loadedData.cards.get(code)?.name ?? null;
+export function getCardName(code: number): string {
+  return loadedData.cards.get(code)?.name ?? `${code}`;
 }
 
-function formatLocation(location: OcgLocation, sequence: number) {
+export function formatLocation(location: OcgLocation, sequence: number) {
   if (location === OcgLocation.SZONE) {
     if (sequence < 5) return getSysString(1003);
     else if (sequence === 5) return getSysString(1008);
@@ -782,7 +883,7 @@ function setupPile(
         pos: { controller, location: loc, sequence: i, overlay: null },
         status: "placed",
         position: "down_atk",
-      } satisfies CardInfo)
+      }) satisfies CardInfo
   );
 }
 
