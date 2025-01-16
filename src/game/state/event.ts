@@ -1,23 +1,24 @@
 import { CardPos } from ".";
 
-interface DuelEventStart {
+export interface DuelEventStart {
   type: "start";
 }
 
-interface DuelEventDraw {
+export interface DuelEventDraw {
   type: "draw";
   player1: number[];
   player2: number[];
 }
 
-interface DuelEventMove {
+export interface DuelEventMove {
   type: "move";
   code: number;
   source: CardPos;
   dest: CardPos;
+  reason?: "summon" | "spsummon";
 }
 
-interface DuelEventPhase {
+export interface DuelEventPhase {
   type: "phase";
 }
 

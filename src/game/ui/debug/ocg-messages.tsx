@@ -1,6 +1,7 @@
 import {
   OcgCardLocPos,
   OcgHintType,
+  OcgLocation,
   ocgLocationString,
   OcgMessage,
   OcgMessageType,
@@ -10,6 +11,7 @@ import {
 } from "ocgcore-wasm";
 import { Fragment, ReactNode } from "react";
 import { omit } from "remeda";
+import { parseFieldMask } from "../../../lib/parse-field-mask";
 import { getCardName, getHint } from "../../runner";
 import { useGameStore } from "../../state";
 
@@ -61,27 +63,30 @@ function messageContent(m: OcgMessage) {
         case OcgHintType.MESSAGE: {
           return (
             <div>
-              Message for P{m.player + 1}: "{getHint(m.hint)}"
+              Message for P{m.player + 1}: "{getHint(m.hint)}" (
+              {m.hint.toString()})
             </div>
           );
         }
         case OcgHintType.EVENT: {
           return (
             <div>
-              Event for P{m.player + 1}: "{getHint(m.hint)}"
+              Event for P{m.player + 1}: "{getHint(m.hint)}" (
+              {m.hint.toString()})
             </div>
           );
         }
         case OcgHintType.SELECTMSG: {
           return (
             <div>
-              Select for P{m.player + 1}: "{getHint(m.hint)}"
+              Select for P{m.player + 1}: "{getHint(m.hint)}" (
+              {m.hint.toString()})
             </div>
           );
         }
         default: {
           const type = Object.entries(OcgHintType).find(
-            (c) => c[1] === m.hint_type
+            (c) => c[1] === m.hint_type,
           )?.[0];
           return (
             <div className="text-red-500">
@@ -135,6 +140,13 @@ function messageContent(m: OcgMessage) {
         </>
       );
     }
+    case OcgMessageType.SELECT_PLACE: {
+      const mask = produceMask(m.field_mask);
+      return <div className="whitespace-pre">{mask}</div>;
+    }
+    case OcgMessageType.SUMMONING: {
+      return <div>{card(m.code, m)}</div>;
+    }
     default: {
       return (
         <div className="text-xs whitespace-pre">
@@ -145,10 +157,64 @@ function messageContent(m: OcgMessage) {
   }
 }
 
+const maskContentMap = new Map<number, string>([
+  [1, " mm "],
+  [2, " st "],
+  [3, " fs "],
+  [4, " emz"],
+  [5, " pl "],
+  [6, " pr "],
+]);
+
+function produceMask(fieldMask: number) {
+  const field = parseFieldMask(fieldMask);
+  const h = (c: 0 | 1, m: 0 | 1, s: number, r: number) =>
+    field.some(
+      (x) =>
+        x.controller === c &&
+        x.location === (m ? OcgLocation.MZONE : OcgLocation.SZONE) &&
+        x.sequence === s,
+    )
+      ? r
+      : -r;
+
+  const a = <T,>(length: number, map: (v: number) => T): T[] => {
+    return Array.from({ length }, (_, i) => map(i));
+  };
+  const r = <T,>(length: number, map: (v: number) => T): T[] => {
+    return Array.from({ length }, (_, i) => map(length - 1 - i));
+  };
+
+  const result = [
+    [h(1, 0, 7, 6), ...r(5, (x) => h(1, 0, x, 2)), h(1, 0, 6, 5)],
+    [0, ...r(5, (x) => h(1, 1, x, 1)), h(1, 0, 5, 3)],
+    [0, 0, h(1, 1, 6, 4), 0, h(1, 1, 5, 4), 0, 0],
+    [0, 0, h(0, 1, 5, 4), 0, h(0, 1, 6, 4), 0, 0],
+    [h(0, 0, 5, 3), ...a(5, (x) => h(0, 1, x, 1)), 0],
+    [h(0, 0, 6, 5), ...a(5, (x) => h(0, 0, x, 2)), h(0, 0, 7, 6)],
+  ];
+
+  const renderCell = (cell: number) => {
+    if (cell === 0) {
+      return "    ";
+    }
+    const content = maskContentMap.get(Math.abs(cell));
+    return cell > 0 ? (
+      <span className="text-white">{content}</span>
+    ) : (
+      <span className="text-gray-500">{content}</span>
+    );
+  };
+
+  const renderLine = (line: number[]) => join(line.map(renderCell), null);
+
+  return join(result.map(renderLine), "\n");
+}
+
 function join(
   values: ReactNode[],
   sep: ReactNode = ", ",
-  empty: ReactNode = "none"
+  empty: ReactNode = "none",
 ) {
   if (values.length === 0) {
     return <>{empty}</>;
@@ -211,6 +277,6 @@ function jsonStringify(data: any) {
   return JSON.stringify(
     data,
     (_key, value) => (typeof value === "bigint" ? value.toString() : value),
-    2
+    2,
   );
 }

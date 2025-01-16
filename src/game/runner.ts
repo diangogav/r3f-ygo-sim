@@ -72,7 +72,7 @@ export async function createGame(signal?: AbortSignal) {
   }
 
   loadedData.cards = new Map<number, (typeof deckData.cards)[number]>(
-    deckData.cards.map((c) => [c.id, c])
+    deckData.cards.map((c) => [c.id, c]),
   );
   loadedData.scripts = new Map(deckData.scripts);
   loadedData.strings = {
@@ -118,12 +118,12 @@ export async function createGame(signal?: AbortSignal) {
   ocg.loadScript(
     duel,
     "constant.lua",
-    loadedData.scripts.get("constant.lua") ?? ""
+    loadedData.scripts.get("constant.lua") ?? "",
   );
   ocg.loadScript(
     duel,
     "utility.lua",
-    loadedData.scripts.get("utility.lua") ?? ""
+    loadedData.scripts.get("utility.lua") ?? "",
   );
 
   const player1Deck = shufflePile(deckData.player1.deck.main, seed);
@@ -140,12 +140,12 @@ export async function createGame(signal?: AbortSignal) {
           deck: setupPile(
             0,
             ocg.duelQueryCount(duel, 0, OcgLocation.DECK),
-            "deck"
+            "deck",
           ),
           extra: setupPile(
             0,
             ocg.duelQueryCount(duel, 0, OcgLocation.EXTRA),
-            "extra"
+            "extra",
           ),
           banish: [],
           grave: [],
@@ -161,12 +161,12 @@ export async function createGame(signal?: AbortSignal) {
           deck: setupPile(
             1,
             ocg.duelQueryCount(duel, 1, OcgLocation.DECK),
-            "deck"
+            "deck",
           ),
           extra: setupPile(
             1,
             ocg.duelQueryCount(duel, 1, OcgLocation.EXTRA),
-            "extra"
+            "extra",
           ),
           banish: [],
           grave: [],
@@ -190,7 +190,7 @@ function loadPile(
   duel: OcgDuelHandle,
   player: 0 | 1,
   location: OcgLocation,
-  cards: number[]
+  cards: number[],
 ) {
   const base: OcgNewCardInfo = {
     code: 0,
@@ -352,7 +352,10 @@ export function convertGameLocation({
 
 export function egs() {
   const event = gs().events.at(-1);
-  return event?.nextState ?? eventfulGS(gs());
+  if (event) {
+    return { ...event.nextState };
+  }
+  return eventfulGS(gs());
 }
 
 export function gs() {
@@ -400,7 +403,7 @@ export function runSimulatorStep() {
           nextState = moveCard(
             nextState,
             { ...topCard, code: drawn.code, position },
-            cardPos(player, "hand", Infinity)
+            cardPos(player, "hand", Infinity),
           );
         }
 
@@ -421,7 +424,7 @@ export function runSimulatorStep() {
               },
               nextState,
             },
-            true
+            true,
           );
         } else {
           gs().queueEvent({
@@ -571,8 +574,8 @@ export function runSimulatorStep() {
 
         console.log(`Moving card from ${cardLoc(source)} to ${cardLoc(dest)}`);
 
-        const card = getCardInPos(gs(), source)!;
-        const nextState = moveCard(gs(), { ...card, code, position }, dest);
+        const card = getCardInPos(egs(), source)!;
+        const nextState = moveCard(egs(), { ...card, code, position }, dest);
         gs().queueEvent({
           event: {
             type: "move",
@@ -582,7 +585,7 @@ export function runSimulatorStep() {
           },
           nextState,
         });
-        return 1;
+        break;
       }
       case OcgMessageType.SET: {
         console.log(`Card was set.`);
@@ -598,6 +601,20 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SUMMONING: {
+        // attach event to last move
+        const lastEvent = gs().events.at(-1);
+        if (lastEvent?.event.type === "move") {
+          gs().queueEvent(
+            {
+              event: {
+                ...lastEvent.event,
+                reason: "summon",
+              },
+              nextState: lastEvent.nextState,
+            },
+            true,
+          );
+        }
         break;
       }
       case OcgMessageType.SUMMONED: {
@@ -626,19 +643,21 @@ export function runSimulatorStep() {
       }
       case OcgMessageType.SELECT_CHAIN: {
         console.log(`Select chain for Player ${m.player + 1}`);
-        if (m.selects.length === 0) {
-          break;
+        const actions: CardAction[] = [];
+
+        if (m.selects.length === 0 || !m.forced) {
+          actions.push({
+            kind: "continue",
+            response: { type: OcgResponseType.SELECT_CHAIN, index: -1 },
+            pos: null,
+          });
         }
 
-        const actions: CardAction[] = [];
         for (const [index, action] of m.selects.entries()) {
           actions.push({
             kind: "activate",
-            response: {
-              type: OcgResponseType.SELECT_CHAIN,
-              index,
-            },
-            pos: convertLocation(action)!,
+            response: { type: OcgResponseType.SELECT_CHAIN, index },
+            pos: convertLocation(action),
           });
         }
         gs().setActions(actions);
@@ -647,7 +666,7 @@ export function runSimulatorStep() {
       case OcgMessageType.SELECT_YESNO: {
         const title = getHint(m.description);
         console.log(
-          `Select Yes/No message for player ${m.player + 1}: ${title}`
+          `Select Yes/No message for player ${m.player + 1}: ${title}`,
         );
         gs().openDialog({
           title: title ?? `${m.description}`,
@@ -662,7 +681,7 @@ export function runSimulatorStep() {
           const formatted = sprintf(
             getSysString(200) ?? "",
             getCardName(m.code),
-            formatLocation(m.location, m.sequence) ?? "?"
+            formatLocation(m.location, m.sequence) ?? "?",
           );
           text = `${event_string}\n${formatted}`;
         } else if (m.description === 221n) {
@@ -670,19 +689,19 @@ export function runSimulatorStep() {
           const formatted = sprintf(
             getSysString(221) ?? "",
             getCardName(m.code),
-            formatLocation(m.location, m.sequence) ?? "?"
+            formatLocation(m.location, m.sequence) ?? "?",
           );
           text = `${event_string}\n${formatted}\n${getSysString(223) ?? ""}`;
         } else {
           const formatted = sprintf(
             getHint(m.description) ?? "",
-            getCardName(m.code)
+            getCardName(m.code),
           );
           text = formatted;
         }
 
         console.log(
-          `Select Yes/No message for player ${m.player + 1}: ${text}`
+          `Select Yes/No message for player ${m.player + 1}: ${text}`,
         );
 
         gs().openDialog({
@@ -734,7 +753,7 @@ export function runSimulatorStep() {
           }
           default: {
             const type = Object.entries(OcgHintType).find(
-              (c) => c[1] === m.hint_type
+              (c) => c[1] === m.hint_type,
             )?.[0];
             console.log(`unknown hint type ${type ?? m.hint_type}`, m);
             break;
@@ -749,7 +768,7 @@ export function runSimulatorStep() {
       }
       case OcgMessageType.CONFIRM_CARDS: {
         console.log(
-          `Confirm ${m.cards.length} cards for player ${m.player + 1}`
+          `Confirm ${m.cards.length} cards for player ${m.player + 1}`,
         );
         break;
       }
@@ -766,7 +785,7 @@ export function runSimulatorStep() {
 
 function preloadTexture(code: number) {
   useTexture.preload(
-    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`)
+    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`),
   );
 }
 
@@ -783,7 +802,7 @@ function parseFieldMask(mask: number) {
   function parseFieldMaskPlayer(
     m: number,
     controller: 0 | 1,
-    places: CardFieldPos[]
+    places: CardFieldPos[],
   ) {
     for (let i = 0; i < 7; i++) {
       // 5 mm, 2 em
@@ -826,9 +845,10 @@ export function sendResponse(resp: OcgResponse) {
   if (!ocg || !gameInstance) {
     return;
   }
+  console.log("send response", resp);
   useGameStore.getState().setActions([]);
   useGameStore.getState().closeDialog();
-  useGameStore.getState().setSelectedHandCard(null);
+  useGameStore.getState().setSelectedCard(null);
   useGameStore.getState().setFieldSelect(null);
   ocg.duelSetResponse(gameInstance, resp);
 }
@@ -872,7 +892,7 @@ export function formatLocation(location: OcgLocation, sequence: number) {
 function setupPile(
   controller: 0 | 1,
   length: number,
-  loc: CardPos["location"]
+  loc: CardPos["location"],
 ) {
   return Array.from(
     { length },
@@ -883,7 +903,7 @@ function setupPile(
         pos: { controller, location: loc, sequence: i, overlay: null },
         status: "placed",
         position: "down_atk",
-      }) satisfies CardInfo
+      }) satisfies CardInfo,
   );
 }
 

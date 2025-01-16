@@ -1,4 +1,4 @@
-import { useFrame, useThree } from "@react-three/fiber";
+import { ThreeElement, useFrame, useThree } from "@react-three/fiber";
 import {
   ForwardRefExoticComponent,
   PropsWithoutRef,
@@ -12,7 +12,7 @@ import {
   MeshStandardMaterialParameters,
 } from "three";
 
-type TestMaterialType = JSX.IntrinsicElements["meshStandardMaterial"] & {
+type TestMaterialType = ThreeElement<typeof MeshStandardMaterial> & {
   cameraLengthInverse?: number;
 };
 
@@ -64,7 +64,7 @@ vec4 mvPosition = vec4( transformed, 1.0 );
 mvPosition = modelViewMatrix * mvPosition;
 
 gl_Position = projectionMatrix * mvPosition;
-`
+`,
     );
   }
 
@@ -85,7 +85,7 @@ export const MeshTestMaterial: ForwardRefComponent<Props, TestMaterialImpl> =
   forwardRef(({ ...props }: Props, ref) => {
     const [material] = useState(() => new TestMaterialImpl());
     const camera = useThree((s) => s.camera);
-    useFrame((state) => {
+    useFrame(() => {
       material.cameraLengthInverse = 1 / camera.position.length();
     });
     return (

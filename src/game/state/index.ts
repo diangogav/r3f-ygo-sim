@@ -1,8 +1,8 @@
 import { OcgMessage, OcgResponse } from "ocgcore-wasm";
+import * as R from "remeda";
 import { create } from "zustand";
 import { combine } from "zustand/middleware";
 import { DuelEvent } from "./event";
-import * as R from "remeda";
 
 export type GameState = {
   players: [PlayerState, PlayerState];
@@ -10,7 +10,7 @@ export type GameState = {
   turnPlayer: 0 | 1;
   phase: GameStatePhases;
 
-  selectedHandCard: number | null;
+  selectedCard: CardPos | null;
   selectField: { positions: CardFieldPos[]; count: number } | null;
   events: DuelEventEntry[];
   actions: CardAction[];
@@ -20,7 +20,7 @@ export type GameState = {
   };
 };
 
-type EventfulGameState = Pick<
+export type EventfulGameState = Pick<
   GameState,
   "players" | "turn" | "turnPlayer" | "phase"
 >;
@@ -45,13 +45,14 @@ export interface DuelEventEntry {
 
 export type CardAction = {
   kind:
+    | "continue"
     | "activate"
     | "summon"
     | "specialSummon"
     | "setMonster"
     | "setSpell"
     | "changePos";
-  pos: CardPos;
+  pos: CardPos | null;
   response: OcgResponse;
 };
 
@@ -151,6 +152,7 @@ export const useGameStore = create(
       turnPlayer: 0,
       phase: "dp",
 
+      selectedCard: null,
       selectedHandCard: null,
       actions: [],
       selectField: null,
@@ -169,7 +171,7 @@ export const useGameStore = create(
       queueEvent(
         event: Omit<DuelEventEntry, "id" | "nextState"> &
           Partial<Pick<DuelEventEntry, "nextState">>,
-        replaceLast?: boolean
+        replaceLast?: boolean,
       ) {
         set(({ events, players, turn, turnPlayer, phase }) => ({
           events: [
@@ -199,18 +201,21 @@ export const useGameStore = create(
       },
       nextEvent() {
         set((state) => ({
-          ...state.events.at(0)?.nextState,
+          ...R.pick(
+            state.events.at(0)?.nextState ?? ({} as Partial<EventfulGameState>),
+            ["players", "turn", "turnPlayer", "phase"],
+          ),
           events: state.events.slice(1),
         }));
       },
       setActions(actions: CardAction[]) {
         set(() => ({ actions }));
       },
-      setSelectedHandCard(index: number | null) {
-        set(() => ({ selectedHandCard: index }));
+      setSelectedCard(card: CardPos | null) {
+        set(() => ({ selectedCard: card }));
       },
       setFieldSelect(
-        options: { positions: CardFieldPos[]; count: number } | null
+        options: { positions: CardFieldPos[]; count: number } | null,
       ) {
         set(() => ({ selectField: options }));
       },
@@ -220,8 +225,8 @@ export const useGameStore = create(
       closeDialog() {
         set(() => ({ dialog: null }));
       },
-    })
-  )
+    }),
+  ),
 );
 
 export function eventfulGS({ players, turn, turnPlayer, phase }: GameState) {
@@ -232,7 +237,7 @@ export function cardPos(
   controller: 0 | 1,
   location: CardLocation,
   sequence: number,
-  overlay: number | null = null
+  overlay: number | null = null,
 ): CardPos {
   return { controller, location, sequence, overlay };
 }
@@ -240,7 +245,7 @@ export function cardPos(
 export function moveCard<State extends Pick<GameState, "players">>(
   state: State,
   card: CardInfo,
-  dest: CardPos
+  dest: CardPos,
 ): State {
   return setCard(setCard(state, null, card.pos), card, dest);
 }
@@ -248,7 +253,7 @@ export function moveCard<State extends Pick<GameState, "players">>(
 export function reorderHand<State extends Pick<GameState, "players">>(
   state: State,
   controller: 0 | 1,
-  cards: number[]
+  cards: number[],
 ): State {
   return {
     ...state,
@@ -261,10 +266,10 @@ export function reorderHand<State extends Pick<GameState, "players">>(
               hand: R.pipe(
                 player.field.hand,
                 R.sortBy((c) => cards.indexOf(c.code)),
-                R.map((c, i) => ({ ...c, pos: { ...c.pos, sequence: i } }))
+                R.map((c, i) => ({ ...c, pos: { ...c.pos, sequence: i } })),
               ),
             },
-          }
+          },
     ),
   };
 }
@@ -298,9 +303,26 @@ function updateCards(state: EventfulGameState, cards: PartialCardInfo[]) {
 const pileLocations = ["hand", "deck", "grave", "extra", "banish"] as const;
 
 export function isPileLocation(
-  location: CardLocation
+  location: CardLocation,
 ): location is (typeof pileLocations)[number] {
   return (pileLocations as readonly CardLocation[]).includes(location);
+}
+
+const fieldLocations = [
+  "deck",
+  "grave",
+  "extra",
+  "banish",
+  "spellZone",
+  "fieldZone",
+  "extraMonsterZone",
+  "mainMonsterZone",
+] as const;
+
+export function isFieldLocation(
+  location: CardLocation,
+): location is (typeof fieldLocations)[number] {
+  return (fieldLocations as readonly CardLocation[]).includes(location);
 }
 
 // function cardWithPos<C extends CardInfo | null>(
@@ -362,8 +384,8 @@ export function getCardWithId(state: Pick<GameState, "players">, id: string) {
 }
 
 export function getCardInPos(
-  state: GameState,
-  { controller, location, sequence }: CardPos
+  state: EventfulGameState,
+  { controller, location, sequence }: CardPos,
 ) {
   const { field } = state.players[controller];
   if (location === "fieldZone") {
@@ -375,7 +397,7 @@ export function getCardInPos(
 function setCard<State extends Pick<GameState, "players">>(
   state: State,
   card: CardInfo | null,
-  { controller, location, sequence }: CardPos
+  { controller, location, sequence }: CardPos,
 ): State {
   const newCard: CardInfo | null = card
     ? { ...card, pos: { ...card.pos, controller, location, sequence } }
@@ -395,7 +417,7 @@ function setCard<State extends Pick<GameState, "players">>(
                   ? newCard
                   : updateSlots(player.field[location], newCard, sequence),
             },
-          }
+          },
     ),
   };
 }
@@ -403,7 +425,7 @@ function setCard<State extends Pick<GameState, "players">>(
 function updateSlots<Slots extends (CardInfo | null)[]>(
   slots: Slots,
   card: CardInfo | null,
-  index: number
+  index: number,
 ): Slots {
   return slots.map((c, i) => (i === index ? card : c)) as Slots;
 }
@@ -416,14 +438,14 @@ function updatePile(pile: CardInfo[], card: CardInfo | null, index: number) {
         ? index < 0
           ? [card, ...pile]
           : [...pile, card]
-        : pile
+        : pile,
   );
 }
 
 function replaceOrRemove(
   arr: CardInfo[],
   value: CardInfo | null,
-  index: number
+  index: number,
 ): CardInfo[] {
   return value
     ? arr.map((c, i) => (i === index ? value : c))
@@ -432,6 +454,15 @@ function replaceOrRemove(
 
 function recalculateSequence(cards: CardInfo[]): CardInfo[] {
   return cards.map((c, i) => ({ ...c, pos: { ...c.pos, sequence: i } }));
+}
+
+export function isCardPosEqual(a: CardPos, b: CardPos) {
+  return (
+    a.controller === b.controller &&
+    a.location === b.location &&
+    a.sequence === b.sequence &&
+    a.overlay === b.overlay
+  );
 }
 
 // if (isPileLocation(location)) {

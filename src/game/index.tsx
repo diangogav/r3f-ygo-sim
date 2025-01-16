@@ -1,30 +1,28 @@
 import {
   Html,
-  Hud,
-  OrthographicCamera,
   PerspectiveCamera,
-  Text,
+  useProgress,
   useTexture,
 } from "@react-three/drei";
-import { Canvas, extend } from "@react-three/fiber";
-import { EffectComposer } from "@react-three/postprocessing";
+import { extend, ThreeEvent } from "@react-three/fiber";
 import {
-  AnimatePresence,
-  AnimationSequence,
-  ValueAnimationTransition,
   animate,
+  AnimatePresence,
   motion as htmlMotion,
   useMotionValue,
   useTransform,
+  ValueAnimationTransition,
 } from "framer-motion";
-import { motion } from "framer-motion-3d";
+import { motion, MotionCanvas } from "framer-motion-3d";
 import { OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
+  memo,
   ReactNode,
-  RefObject,
+  Ref,
+  RefAttributes,
   Suspense,
-  forwardRef,
+  use,
   useCallback,
   useEffect,
   useMemo,
@@ -43,8 +41,14 @@ import {
   PointLight,
   Vector3,
 } from "three";
-import { MeshTestMaterial } from "../components/three/test-material";
+import { useEventCallback } from "usehooks-ts";
 import { cn } from "../lib/cn";
+import {
+  animateDrawTarget,
+  animateHandSizeChange,
+  animateMove,
+  AnimationCleanup,
+} from "./animations";
 import {
   convertGameLocation,
   gameInstancePromise,
@@ -55,14 +59,13 @@ import {
   CardAction,
   CardFieldPos,
   CardInfo,
-  CardLocation,
-  CardPos,
   DialogConfig,
-  PlayerState,
+  isCardPosEqual,
   isPileLocation,
   useGameStore,
 } from "./state";
 import { DebugMenu } from "./ui/debug";
+import { useComputeCardPosition } from "./utils/position";
 
 const degToRad = Math.PI / 180;
 
@@ -81,44 +84,54 @@ export function Game() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const allCards = useAllCards();
 
-  useEffect(() => {
-    let cancel = false;
-    (async () => {
-      await load;
-      if (cancel) {
-        return;
-      }
-      // console.log("loaded!");
-      useGameStore.getState().queueEvent({ event: { type: "start" } });
-      runSimulatorStep();
-    })();
-
-    return () => {
-      cancel = true;
-    };
-  }, []);
-
-  const playerField = useGameStore((s) => s.players[0]);
-  const setSelectedHandCard = useGameStore((s) => s.setSelectedHandCard);
+  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
   const selectField = useGameStore((s) => s.selectField);
+  const idle = useGameStore((s) => s.events.length === 0);
+  const actions = useGameStore((s) => s.actions);
 
   useEffect(() => {
-    setSelectedHandCard(null);
-  }, [playerField.field.hand.length]);
+    setSelectedCard(null);
+  }, [idle]);
+
+  const onRightClick = useEventCallback(() => {
+    if (!idle) {
+      return;
+    }
+    const cancelAction = actions.find((c) => c.kind === "continue");
+    if (cancelAction) {
+      console.log("continue");
+      sendResponse(cancelAction.response);
+      runSimulatorStep();
+    }
+  });
 
   return (
     <>
+      <GameInitializer />
       <GameWrapper ref={wrapperRef}>
         <RenderDialog />
-        <Canvas
+        <HtmlTurnState />
+        <MotionCanvas
           shadows
           dpr={[1, 2]}
           resize={{ scroll: false, offsetSize: true }}
         >
           <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
           <group
-            onClick={() => setSelectedHandCard(null)}
-            onPointerMissed={() => setSelectedHandCard(null)}
+            onClick={() => setSelectedCard(null)}
+            onPointerMissed={(e) => {
+              console.log("pointer miss", e.button);
+              setSelectedCard(null);
+              e.preventDefault();
+              if (e.button === 2) {
+                onRightClick();
+              }
+            }}
+            onContextMenu={(e) => {
+              e.stopPropagation();
+              e.nativeEvent.preventDefault();
+              onRightClick();
+            }}
           >
             <mesh position={[0, 0, 0]} rotation={[-20 * degToRad, 0, 0]}>
               <meshStandardMaterial color="#fff" />
@@ -136,60 +149,67 @@ export function Game() {
             )}
           </group>
           <Effects />
-          <TurnState />
-        </Canvas>
+        </MotionCanvas>
       </GameWrapper>
       <DebugMenu />
     </>
   );
 }
 
-function TurnState({}: {}) {
-  const width = 10;
-  const height = width * (9 / 16);
+function GameInitializer({}: {}) {
+  use(load);
 
+  const [initPhase, setInitPhase] = useState<0 | 1 | 2>(0);
+  const isLoading = useProgress((p) => p.active);
+
+  useEffect(() => {
+    // wait for first isLoading
+    if (initPhase === 0 && isLoading) {
+      setInitPhase(1);
+    }
+    // wait for isLoading to finish
+    if (initPhase === 1 && !isLoading) {
+      setInitPhase(2);
+      useGameStore.getState().queueEvent({ event: { type: "start" } });
+      runSimulatorStep();
+    }
+  }, [isLoading, initPhase]);
+
+  return null;
+}
+
+function HtmlTurnState({}: {}) {
   const event = useGameStore((s) => s.events.at(0));
   const currentEventRef = useRef<null | string>(null);
   currentEventRef.current = event?.id ?? null;
 
   return (
-    <Hud renderPriority={1}>
-      <OrthographicCamera
-        makeDefault
-        left={-width}
-        right={width}
-        bottom={-height}
-        top={height}
-        position={[0, 0, 10]}
-      />
-      <AnimatePresence>
-        {event && event.event.type === "start" && (
-          <motion.group
+    <AnimatePresence mode="wait">
+      {event &&
+        (event.event.type === "start" || event.event.type === "phase") && (
+          <htmlMotion.div
             key={event.id}
-            initial={{ x: 20 }}
-            animate={{ x: 0 }}
-            exit={{ x: -20 }}
-            transition={{ duration: 2 }}
-            onAnimationComplete={() => {
-              if (event.id === currentEventRef.current) {
-                useGameStore.getState().nextEvent();
-              }
-            }}
+            className="absolute z-10 inset-0 flex items-center justify-center"
           >
-            <Suspense>
-              <Text
-                color="black"
-                anchorX="center"
-                anchorY="middle"
-                fontWeight={800}
-              >
-                DUEL START!
-              </Text>
-            </Suspense>
-          </motion.group>
+            <htmlMotion.div
+              className="relative text-[10cqh] font-bold"
+              initial={{ x: "20cqw", opacity: 0 }}
+              animate={{ x: "0", opacity: 1 }}
+              exit={{ x: "20cqw", opacity: 0 }}
+              transition={{ duration: 0.5 }}
+              onAnimationComplete={() => {
+                if (event.id === currentEventRef.current) {
+                  setTimeout(() => useGameStore.getState().nextEvent(), 500);
+                }
+              }}
+            >
+              {event.event.type === "start"
+                ? "DUEL START!"
+                : event.nextState.phase}
+            </htmlMotion.div>
+          </htmlMotion.div>
         )}
-      </AnimatePresence>
-    </Hud>
+    </AnimatePresence>
   );
 }
 
@@ -203,7 +223,7 @@ function RenderSelectField({ positions, count }: RenderSelectFieldProps) {
 
   const onConfirm = (set: Set<number>) => {
     const places = Array.from(set.values(), (index) =>
-      convertGameLocation({ ...positions[index], overlay: null })
+      convertGameLocation({ ...positions[index], overlay: null }),
     );
     sendResponse({
       type: OcgResponseType.SELECT_PLACE,
@@ -288,23 +308,18 @@ function RenderSelectFieldSlot({
 }
 
 function Effects() {
-  // const { size } = useThree();
   return null;
-
-  return (
-    <EffectComposer stencilBuffer autoClear={false} multisampling={4}>
-      <></>
-    </EffectComposer>
-  );
 }
 
 function RenderDialog() {
+  const idle = useGameStore((s) => s.events.length === 0);
   const dialog = useGameStore((s) => s.dialog);
 
   return (
     <AnimatePresence>
-      {dialog && (
+      {idle && dialog && (
         <htmlMotion.div
+          key="dialog"
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -375,10 +390,10 @@ function DialogSelectCard({
               <img
                 className={cn(
                   "h-[8cqw] opacity-50",
-                  selected.has(i) && "opacity-100"
+                  selected.has(i) && "opacity-100",
                 )}
                 src={getProxiedUrl(
-                  `https://images.ygoprodeck.com/images/cards/${c.code}.jpg`
+                  `https://images.ygoprodeck.com/images/cards/${c.code}.jpg`,
                 )}
                 alt=""
               />
@@ -431,206 +446,23 @@ function DialogSelectYesNo({ type }: DialogSelectYesNoProps) {
   );
 }
 
-const fieldTransitionConfig = {
-  type: "spring",
-  duration: 0.5,
-  bounce: 0,
-} as const;
-
-function handPosition(
-  { controller, sequence }: CardPos,
-  playerField: PlayerState
-) {
-  const handSize = playerField.field.hand.length;
-  let offset = sequence - Math.floor(handSize / 2);
-  if (handSize % 2 === 0) offset += 0.5;
-  return [
-    offset * (controller === 0 ? 1.5 : 1.4),
-    controller === 0 ? -8 : 7.5,
-    (controller === 0 ? 6 : 1) + sequence * 0.01,
-  ] as const;
-}
-
-function isSlamAnimation(prevLocation: CardLocation, location: CardLocation) {
-  return (
-    ["deck", "hand", "grave", "extra", "banish"].includes(prevLocation) &&
-    ["extraMonsterZone", "mainMonsterZone"].includes(location)
-  );
-}
-
-function isFieldLocation(location: CardLocation) {
-  return [
-    "deck",
-    "grave",
-    "extra",
-    "banish",
-    "spellZone",
-    "fieldZone",
-    "extraMonsterZone",
-    "mainMonsterZone",
-  ].includes(location);
-}
-
 const fieldEuler = [
   new Euler(-20 * degToRad, 0, 0),
   new Euler(-20 * degToRad, 0, 180 * degToRad),
 ] as const;
 
-const getCardPosition = (() => {
-  const vec = new Vector3();
-  const vecFinal = new Vector3();
-  const rot = new Euler();
-  const rotFinal = new Euler();
-
-  return function getCardPosition(
-    { pos, position }: CardInfo,
-    fieldState: PlayerState
-  ) {
-    const { controller, location } = pos;
-
-    let faceDown = position === "down_atk" || position === "down_def";
-    const defense = position === "down_def" || position === "up_def";
-
-    if (isFieldLocation(location)) {
-      const [[posX, posY, posZ], [rotX, rotY, rotZ]] =
-        getCardLocalFieldPosition(pos, fieldState)!;
-      vec.set(posX, posY, posZ);
-      rot.set(rotX, rotY, rotZ);
-
-      vecFinal.copy(vec);
-      vecFinal.applyEuler(fieldEuler[controller]);
-      rotFinal.copy(rot);
-
-      if (faceDown) {
-        rotFinal.y += 180 * degToRad;
-      }
-      if (defense) {
-        rotFinal.z += 90 * degToRad;
-      }
-
-      rotFinal.x += fieldEuler[controller].x;
-      rotFinal.y += fieldEuler[controller].y;
-      rotFinal.z += fieldEuler[controller].z;
-    } else if (location === "hand") {
-      const [posX, posY, posZ] = handPosition(pos, fieldState);
-      vec.set(posX, posY, posZ);
-      rot.set(0, 0, 0);
-      vecFinal.copy(vec);
-      rotFinal.copy(rot);
-
-      if (faceDown && controller === 1) {
-        rotFinal.y += 180 * degToRad;
-      }
-    }
-
-    return [
-      [vecFinal.x, vecFinal.y, vecFinal.z],
-      [rotFinal.x, rotFinal.y, rotFinal.z],
-    ] as const;
-  };
-})();
-
-const getCardLocalFieldPosition = (() => {
-  const position = new Vector3();
-  const rotation = new Euler();
-
-  return function getCardLocalFieldPosition(
-    { sequence, location }: CardPos,
-    playerField: PlayerState
-  ) {
-    switch (location) {
-      case "deck": {
-        const pileSize = playerField.field.deck.length;
-        position.set(7.5, -6, (pileSize - sequence) * 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "extra": {
-        const pileSize = playerField.field.extra.length;
-        position.set(-7.5, -6, (pileSize - sequence) * 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "spellZone": {
-        position.set((sequence - 2) * 2.5, -6, 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "mainMonsterZone": {
-        position.set((sequence - 2) * 2.5, -3, 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "fieldZone": {
-        position.set(-7.5, -3, 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "grave": {
-        const pileSize = playerField.field.deck.length;
-        position.set(7.5, -3, (pileSize - sequence) * 0.01);
-        rotation.set(0, 0, 0);
-        break;
-      }
-      case "banish": {
-        const pileSize = playerField.field.deck.length;
-        position.set(7.5, 0, (pileSize - sequence) * 0.01);
-        rotation.set(0, 0, 90 * degToRad);
-        break;
-      }
-      default: {
-        return null;
-      }
-    }
-    return [
-      [position.x, position.y, position.z],
-      [rotation.x, rotation.y, rotation.z],
-    ] as const;
-  };
-})();
-
-function useComputeCardPosition(card: CardInfo) {
+function useHandOffset(card: CardInfo) {
   const {
-    pos: { controller, location, overlay, sequence },
-    position,
+    pos: { controller, location },
   } = card;
-
-  const fieldState = useGameStore((s) => s.players[controller]);
-
-  const mPosX = useMotionValue(0);
-  const mPosY = useMotionValue(0);
-  const mPosZ = useMotionValue(0);
-  const mRotX = useMotionValue(0);
-  const mRotY = useMotionValue(0);
-  const mRotZ = useMotionValue(0);
-
-  useEffect(() => {
-    const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-      card,
-      fieldState
-    );
-    mPosX.jump(posX);
-    mPosY.jump(posY);
-    mPosZ.jump(posZ);
-    mRotX.jump(rotX);
-    mRotY.jump(rotY);
-    mRotZ.jump(rotZ);
-  }, [controller, location, overlay, sequence, position]);
-
-  return [
-    [mPosX, mPosY, mPosZ],
-    [mRotX, mRotY, mRotZ],
-  ] as const;
-}
-
-function useHandOffset({ pos: { controller, location, sequence } }: CardInfo) {
   const playerField = useGameStore((s) => s.players[controller]);
-  const selectedHandCard = useGameStore((s) => s.selectedHandCard);
+  const selectedCard = useGameStore((s) => s.selectedCard);
+  const idle = useGameStore((s) => s.events.length === 0);
 
   const [hover, updateHover] = useState(false);
+  const isHover = idle && hover;
 
-  const isOwnHand = controller === 0 && location === "hand";
-  const selected = isOwnHand && selectedHandCard === sequence;
+  const selected = selectedCard && isCardPosEqual(selectedCard, card.pos);
 
   let handOffsetY = 0;
   let handOffsetZ = 0;
@@ -638,11 +470,12 @@ function useHandOffset({ pos: { controller, location, sequence } }: CardInfo) {
 
   if (location === "hand") {
     const handSize = playerField.field.hand.length;
-    handOffsetY = selected ? 0.15 : hover ? 0.15 : 0;
+    const mult = controller === 0 ? 1 : -1;
+    handOffsetY = selected ? 0.15 * mult : isHover ? 0.15 * mult : 0;
     handScale = selected ? 1.05 : 1;
     handOffsetZ = selected
       ? (handSize + 1) * 0.01
-      : hover
+      : isHover
         ? handSize * 0.01
         : 0;
   }
@@ -671,17 +504,15 @@ function useHandOffset({ pos: { controller, location, sequence } }: CardInfo) {
 
 interface RenderCardProps {
   card: CardInfo;
-  wrapperRef: RefObject<HTMLDivElement>;
+  wrapperRef: Ref<HTMLDivElement>;
 }
 
 function RenderCard({ card, wrapperRef }: RenderCardProps) {
   let {
-    pos: { location, controller, sequence },
+    pos: { location, controller, sequence, overlay },
   } = card;
 
-  const setSelectedHandCard = useGameStore((s) => s.setSelectedHandCard);
-
-  const isOwnHand = controller === 0 && location === "hand";
+  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
 
   const { mHandOffsetY, mHandOffsetZ, mHandScale, updateHover } =
     useHandOffset(card);
@@ -695,93 +526,67 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
     if (!currentEvent) {
       return;
     }
-    // animate drawn card
+    const { event, nextState } = currentEvent;
+    const ctx = {
+      px: mPosX,
+      py: mPosY,
+      pz: mPosZ,
+      rx: mRotX,
+      ry: mRotY,
+      rz: mRotZ,
+      hpy: mHandOffsetY,
+      hpz: mHandOffsetZ,
+      hs: mHandScale,
+    };
 
-    if (currentEvent.event.type === "draw" && location === "deck") {
-      const draws =
-        controller === 0
-          ? currentEvent.event.player1
-          : currentEvent.event.player2;
+    const cleanup: (() => void)[] = [];
+    const addCleanup = (c: AnimationCleanup) => c && cleanup.push(c);
 
-      if (sequence < draws.length) {
-        const newCard =
-          currentEvent.nextState.players[controller].field.hand.find(
-            (x) => x.id === card.id
-          ) ?? card;
-
-        const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-          newCard,
-          currentEvent.nextState.players[controller]
-        );
-
-        const offset = Math.random() * 0.5;
-        const speed = 0.3;
-
-        const animation = animate([
-          [mPosX, posX, { duration: speed, at: offset }],
-          [mPosZ, posZ, { duration: speed, at: offset }],
-          [mRotX, rotX, { duration: speed, at: offset }],
-          [mRotY, rotY, { duration: speed, at: offset }],
-          [mRotZ, rotZ, { duration: speed, at: offset }],
-          ...(controller === 0
-            ? ([
-                [mPosY, posY + 3, { duration: speed, at: offset }],
-                [mHandScale, 1.1, { duration: speed, at: offset }],
-                [mPosY, posY, { duration: speed, at: offset + speed * 2 }],
-                [mHandScale, 1, { duration: speed, at: offset + speed * 2 }],
-              ] as AnimationSequence)
-            : ([
-                [mPosY, posY, { duration: speed, at: offset }],
-              ] as AnimationSequence)),
-        ]);
-
-        return () => animation.cancel();
-      }
+    switch (event.type) {
+      case "move":
+        addCleanup(animateMove(event, nextState, card, ctx));
+        addCleanup(animateHandSizeChange(event, nextState, card, ctx));
+        break;
+      case "draw":
+        addCleanup(animateDrawTarget(event, nextState, card, ctx));
+        addCleanup(animateHandSizeChange(event, nextState, card, ctx));
+        break;
     }
-    // animate cards in hand
-    if (currentEvent.event.type === "draw" && location === "hand") {
-      const draws =
-        controller === 0
-          ? currentEvent.event.player1
-          : currentEvent.event.player2;
-      if (draws.length > 0) {
-        const newCard =
-          currentEvent.nextState.players[controller].field.hand.find(
-            (x) => x.id === card.id
-          ) ?? card;
 
-        const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-          newCard,
-          currentEvent.nextState.players[controller]
-        );
-
-        const animation = animate([
-          [mPosX, posX, { duration: 0.5 }],
-          [mPosY, posY, { duration: 0.5 }],
-          [mPosZ, posZ, { duration: 0.5 }],
-          [mRotX, rotX, { duration: 0.5 }],
-          [mRotY, rotY, { duration: 0.5 }],
-          [mRotZ, rotZ, { duration: 0.5 }],
-        ]);
-
-        return () => animation.cancel();
-      }
+    if (cleanup.length > 0) {
+      return () => cleanup.forEach((c) => c());
     }
   }, [currentEvent?.id]);
 
   const x = useTransform<number, number>([mPosX], ([x1]) => x1);
   const y = useTransform<number, number>(
     [mPosY, mHandOffsetY],
-    ([y1, y2]) => y1 + y2
+    ([y1, y2]) => y1 + y2,
   );
   const z = useTransform<number, number>(
     [mPosZ, mHandOffsetZ],
-    ([z1, z2]) => z1 + z2
+    ([z1, z2]) => z1 + z2,
   );
   const rotateX = useTransform<number, number>([mRotX], ([x1]) => x1);
   const rotateY = useTransform<number, number>([mRotY], ([y1]) => y1);
   const rotateZ = useTransform<number, number>([mRotZ], ([z1]) => z1);
   const scale = useTransform<number, number>([mHandScale], ([s1]) => s1);
+
+  const bindClick =
+    location === "hand" || !isPileLocation(location) || sequence === 0;
+  const bindHover = location === "hand" && controller === 0;
+
+  const onPointerOver = useEventCallback((e: ThreeEvent<PointerEvent>) => {
+    updateHover(true);
+    e.stopPropagation();
+  });
+  const onPointerOut = useEventCallback(() => {
+    updateHover(false);
+  });
+  const onClick = useEventCallback((e: ThreeEvent<MouseEvent>) => {
+    setSelectedCard(card.pos);
+    e.stopPropagation();
+  });
 
   return (
     <motion.object3D
@@ -796,31 +601,23 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
     >
       <RenderCardFront
         code={card.code}
-        onPointerOver={(e) => {
-          updateHover(true);
-          e.stopPropagation();
-        }}
-        onPointerOut={() => {
-          updateHover(false);
-        }}
-        onClick={(e) => {
-          if (isOwnHand) {
-            setSelectedHandCard(sequence);
-            e.stopPropagation();
-          }
-        }}
+        onPointerOver={bindHover ? onPointerOver : undefined}
+        onPointerOut={bindHover ? onPointerOut : undefined}
+        onClick={bindClick ? onClick : undefined}
+      />
+      <RenderCardBack
+        onPointerOver={bindHover ? onPointerOver : undefined}
+        onPointerOut={bindHover ? onPointerOut : undefined}
+        onClick={bindClick ? onClick : undefined}
       />
       <RenderCardActions card={card} wrapperRef={wrapperRef} />
-      <Suspense>
-        <RenderCardBack />
-      </Suspense>
     </motion.object3D>
   );
 }
 
 interface RenderCardActionsProps {
   card: CardInfo;
-  wrapperRef: RefObject<HTMLDivElement>;
+  wrapperRef: Ref<HTMLDivElement>;
 }
 
 function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
@@ -829,14 +626,15 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
   } = card;
 
   const actions = useGameStore((s) => s.actions);
-  const selectedHandCard = useGameStore((s) => s.selectedHandCard);
+  const selectedCard = useGameStore((s) => s.selectedCard);
+  const idle = useGameStore((s) => s.events.length === 0);
 
-  const isOwnHand = controller === 0 && location === "hand";
-  const selected = isOwnHand && selectedHandCard === sequence;
+  const selected =
+    idle && selectedCard && isCardPosEqual(card.pos, selectedCard);
 
   const matchingActions = useMemo(() => {
     return actions.filter(({ pos }) => {
-      if (pos.controller !== controller) {
+      if (pos?.controller !== controller) {
         return false;
       }
       if (
@@ -887,7 +685,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
 
 function useAnimatedValue(
   value: number,
-  config?: ValueAnimationTransition<number>
+  config?: ValueAnimationTransition<number>,
 ) {
   const valueM = useMotionValue(value);
   useEffect(() => {
@@ -899,13 +697,13 @@ function useAnimatedValue(
 
 const cardScale = 2.5;
 
-type RenderCardFrontProps = {
+interface RenderCardFrontProps extends ComponentProps<"mesh"> {
   code: number;
-} & ComponentProps<typeof motion.mesh>;
+}
 
-function RenderCardFront({ code, ...props }: RenderCardFrontProps) {
+const RenderCardFront = memo(({ code, ...props }: RenderCardFrontProps) => {
   return (
-    <motion.mesh {...props}>
+    <mesh {...props}>
       {code > 0 ? (
         <Suspense fallback={<meshStandardMaterial color={Color.NAMES.grey} />}>
           <CardTextureMaterial code={code} />
@@ -914,45 +712,64 @@ function RenderCardFront({ code, ...props }: RenderCardFrontProps) {
         <meshStandardMaterial color={Color.NAMES.grey} />
       )}
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
-    </motion.mesh>
+    </mesh>
   );
-}
+});
 
-function CardTextureMaterial({ code }: { code: number }) {
-  const [frontTexture] = useTexture([
+RenderCardFront.displayName = "RenderCardFront";
+
+type CardTextureMaterialProps = {
+  code: number;
+};
+
+const CardTextureMaterial = memo(({ code }: CardTextureMaterialProps) => {
+  const frontTexture = useTexture(
     getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`),
-  ]);
+  );
   return <meshStandardMaterial map={frontTexture} />;
-}
+});
 
-function RenderCardBack() {
-  const [backTexture] = useTexture([
-    getProxiedUrl(
-      "https://ms.yugipedia.com//thumb/e/e5/Back-EN.png/800px-Back-EN.png"
-    ),
-  ]);
+CardTextureMaterial.displayName = "CardTextureMaterial";
+
+interface RenderCardBackProps extends ComponentProps<"mesh"> {}
+
+const RenderCardBack = memo(({}: RenderCardBackProps) => {
   return (
     <mesh rotation={[0, 180 * degToRad, 0]}>
-      <MeshTestMaterial map={backTexture} />
+      <Suspense fallback={<meshStandardMaterial color={Color.NAMES.brown} />}>
+        <CardBackMaterial />
+      </Suspense>
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
     </mesh>
   );
-}
+});
+
+RenderCardBack.displayName = "RenderCardBack";
+
+const CardBackMaterial = memo(() => {
+  const backTexture = useTexture(
+    getProxiedUrl(
+      "https://ms.yugipedia.com//thumb/e/e5/Back-EN.png/800px-Back-EN.png",
+    ),
+  );
+  return <meshStandardMaterial map={backTexture} />;
+});
 
 type RenderCardOverlayProps = {
   actions: CardAction[];
 };
 
 function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
+  const idle = useGameStore((s) => s.events.length === 0);
   const hasActivateOrSS = useMemo(() => {
     return actions.some(
-      (a) => a.kind === "activate" || a.kind === "specialSummon"
+      (a) => a.kind === "activate" || a.kind === "specialSummon",
     );
   }, [actions]);
 
   const [overlayTexture] = useTexture(["/images/card-highlight.png"]);
 
-  if (actions.length === 0) {
+  if (actions.length === 0 || !idle) {
     return null;
   }
 
@@ -968,8 +785,8 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
         type: "tween",
         ease: "easeInOut",
       }}
-      initial={{ scale: 1, opacity: 0.3 }}
-      animate={{ scale: 1.02, opacity: 0.4 }}
+      initial={{ scale: 1, opacity: 0.2 }}
+      animate={{ scale: 1.02, opacity: 0.3 }}
     >
       <meshStandardMaterial
         color={color}
@@ -981,20 +798,20 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
   );
 }
 
-type GameWrapperProps = { children?: ReactNode };
+interface GameWrapperProps extends RefAttributes<HTMLDivElement> {
+  children?: ReactNode;
+}
 
-const GameWrapper = forwardRef<HTMLDivElement, GameWrapperProps>(
-  function GameWrapper({ children }, ref) {
-    return (
-      <div
-        ref={ref}
-        className="relative bg-gray-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container"
-      >
-        {children}
-      </div>
-    );
-  }
-);
+function GameWrapper({ ref, children }: GameWrapperProps) {
+  return (
+    <div
+      ref={ref}
+      className="relative bg-gray-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container"
+    >
+      {children}
+    </div>
+  );
+}
 
 function useAllCards() {
   const players = useGameStore((s) => s.players);
