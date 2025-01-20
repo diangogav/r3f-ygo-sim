@@ -6,21 +6,17 @@ import {
 } from "@react-three/drei";
 import { extend, ThreeEvent } from "@react-three/fiber";
 import {
-  animate,
   AnimatePresence,
   motion as htmlMotion,
-  useMotionValue,
   useTransform,
-  ValueAnimationTransition,
 } from "framer-motion";
 import { motion, MotionCanvas } from "framer-motion-3d";
-import { OcgResponseType } from "ocgcore-wasm";
+import { OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
+  ComponentPropsWithRef,
   memo,
-  ReactNode,
   Ref,
-  RefAttributes,
   Suspense,
   use,
   useCallback,
@@ -32,14 +28,14 @@ import {
 import { twc } from "react-twc";
 import {
   Color,
-  Euler,
+  DirectionalLight,
   Group,
+  HemisphereLight,
   Mesh,
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
   PointLight,
-  Vector3,
 } from "three";
 import { useEventCallback } from "usehooks-ts";
 import { cn } from "../lib/cn";
@@ -47,11 +43,13 @@ import {
   animateDrawTarget,
   animateHandSizeChange,
   animateMove,
+  animateShuffle,
   AnimationCleanup,
 } from "./animations";
 import {
   convertGameLocation,
   gameInstancePromise,
+  loadedData,
   runSimulatorStep,
   sendResponse,
 } from "./runner";
@@ -59,21 +57,40 @@ import {
   CardAction,
   CardFieldPos,
   CardInfo,
-  DialogConfig,
+  CardPosition,
+  DialogConfigCards,
+  DialogConfigChain,
+  DialogConfigEffectYesNo,
+  DialogConfigPosition,
+  DialogConfigYesNo,
   isCardPosEqual,
+  isDirectInteractionLocation,
   isPileLocation,
   useGameStore,
 } from "./state";
+import {
+  textureCardBack,
+  textureCardFront,
+  textureHighlight,
+  textureSlot,
+} from "./textures";
 import { DebugMenu } from "./ui/debug";
-import { useComputeCardPosition } from "./utils/position";
-
-const degToRad = Math.PI / 180;
+import { SelectableCard } from "./ui/selectable-card";
+import {
+  degToRad,
+  fieldRotation,
+  getFieldSlotPosition,
+  useComputeCardPosition,
+  useHandOffset,
+} from "./utils/position";
 
 const load = gameInstancePromise;
 
 extend({
   Group,
   PointLight,
+  DirectionalLight,
+  HemisphereLight,
   MeshStandardMaterial,
   PlaneGeometry,
   Object3D,
@@ -82,12 +99,12 @@ extend({
 
 export function Game() {
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>;
   const allCards = useAllCards();
 
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
   const selectField = useGameStore((s) => s.selectField);
   const idle = useGameStore((s) => s.events.length === 0);
-  const actions = useGameStore((s) => s.actions);
 
   useEffect(() => {
     setSelectedCard(null);
@@ -97,24 +114,63 @@ export function Game() {
     if (!idle) {
       return;
     }
-    const cancelAction = actions.find((c) => c.kind === "continue");
-    if (cancelAction) {
-      console.log("continue");
-      sendResponse(cancelAction.response);
-      runSimulatorStep();
+
+    const dialog = useGameStore.getState().dialog;
+    if (dialog) {
+      switch (dialog.type) {
+        case "yesno":
+          sendResponse({ type: OcgResponseType.SELECT_YESNO, yes: false });
+          runSimulatorStep();
+          break;
+        case "effectyn":
+          sendResponse({ type: OcgResponseType.SELECT_EFFECTYN, yes: false });
+          runSimulatorStep();
+          break;
+        case "cards":
+          if (dialog.canCancel || dialog.min === 0) {
+            sendResponse({
+              type: OcgResponseType.SELECT_CARD,
+              indicies: dialog.canCancel ? null : [],
+            });
+            runSimulatorStep();
+          }
+          break;
+        case "chain":
+          if (!dialog.forced) {
+            sendResponse({
+              type: OcgResponseType.SELECT_CHAIN,
+              index: null,
+            });
+            runSimulatorStep();
+          }
+      }
     }
+
+    // const cancelAction = actions.find((c) => c.kind === "continue");
+    // if (cancelAction) {
+    //   console.log("continue");
+    //   sendResponse(cancelAction.response);
+    //   runSimulatorStep();
+    // }
   });
 
   return (
     <>
       <GameInitializer />
-      <GameWrapper ref={wrapperRef}>
+      <GameWrapper
+        ref={wrapperRef}
+        onContextMenu={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onRightClick();
+        }}
+      >
         <RenderDialog />
         <HtmlTurnState />
         <MotionCanvas
           shadows
           dpr={[1, 2]}
-          resize={{ scroll: false, offsetSize: true }}
+          resize={{ scroll: true, offsetSize: false }}
         >
           <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
           <group
@@ -133,11 +189,19 @@ export function Game() {
               onRightClick();
             }}
           >
-            <mesh position={[0, 0, 0]} rotation={[-20 * degToRad, 0, 0]}>
+            <mesh
+              position={[0, 0, 0]}
+              rotation={[-fieldRotation * degToRad, 0, 0]}
+            >
               <meshStandardMaterial color="#fff" />
               <planeGeometry args={[30, 20, 1]} />
             </mesh>
-            <pointLight color="#fff" position={[5, 0, 20]} intensity={500} />
+            <hemisphereLight
+              // castShadow
+              intensity={2}
+              color="#fff"
+              groundColor="#777"
+            />
             {allCards.map((card) => (
               <RenderCard wrapperRef={wrapperRef} key={card.id} card={card} />
             ))}
@@ -149,6 +213,11 @@ export function Game() {
             )}
           </group>
           <Effects />
+          {/* <EffectComposer multisampling={0} enableNormalPass>
+            <N8AO />
+            <SMAA />
+            <Bloom />
+          </EffectComposer> */}
         </MotionCanvas>
       </GameWrapper>
       <DebugMenu />
@@ -163,11 +232,17 @@ function GameInitializer({}: {}) {
   const isLoading = useProgress((p) => p.active);
 
   useEffect(() => {
-    // wait for first isLoading
-    if (initPhase === 0 && isLoading) {
+    if (initPhase === 0 && !isLoading) {
+      useTexture.preload([
+        textureSlot,
+        textureCardBack,
+        textureHighlight,
+        ...Array.from(loadedData.cards.values(), (c) =>
+          textureCardFront(c.data.code),
+        ),
+      ]);
       setInitPhase(1);
     }
-    // wait for isLoading to finish
     if (initPhase === 1 && !isLoading) {
       setInitPhase(2);
       useGameStore.getState().queueEvent({ event: { type: "start" } });
@@ -183,23 +258,35 @@ function HtmlTurnState({}: {}) {
   const currentEventRef = useRef<null | string>(null);
   currentEventRef.current = event?.id ?? null;
 
+  const [animationPhase, setAnimationPhase] = useState(0);
+
   return (
     <AnimatePresence mode="wait">
       {event &&
-        (event.event.type === "start" || event.event.type === "phase") && (
+        (event.event.type === "start" || event.event.type === "phase") &&
+        animationPhase === 0 && (
           <htmlMotion.div
             key={event.id}
             className="absolute z-10 inset-0 flex items-center justify-center"
           >
             <htmlMotion.div
               className="relative text-[10cqh] font-bold"
-              initial={{ x: "20cqw", opacity: 0 }}
-              animate={{ x: "0", opacity: 1 }}
-              exit={{ x: "20cqw", opacity: 0 }}
-              transition={{ duration: 0.5 }}
-              onAnimationComplete={() => {
-                if (event.id === currentEventRef.current) {
-                  setTimeout(() => useGameStore.getState().nextEvent(), 500);
+              initial="initial"
+              animate="enter"
+              exit="exit"
+              variants={{
+                initial: { x: "20cqw", opacity: 0 },
+                enter: { x: "0", opacity: 1 },
+                exit: { x: "20cqw", opacity: 0 },
+              }}
+              transition={{ duration: 0.2 }}
+              onAnimationComplete={(def) => {
+                if (def === "enter") {
+                  setTimeout(() => setAnimationPhase(1), 200);
+                }
+                if (def === "exit") {
+                  useGameStore.getState().nextEvent();
+                  setAnimationPhase(0);
                 }
               }}
             >
@@ -276,22 +363,16 @@ function RenderSelectFieldSlot({
   selected,
   onSelect,
 }: RenderSelectFieldSlotProps) {
-  const [slotTexture] = useTexture(["/images/slot.png"]);
+  const slotTexture = useTexture(textureSlot);
 
   const [hover, setHover] = useState(false);
 
-  const [v] = useState(() => new Vector3());
-  if (pos.location === "spellZone") {
-    v.set((pos.sequence - 2) * 2.5, -6, 0.01);
-  } else if (pos.location === "mainMonsterZone") {
-    v.set((pos.sequence - 2) * 2.5, -3, 0.01);
-  }
-  v.applyEuler(fieldEuler[pos.controller]);
+  const [posX, posY, posZ] = getFieldSlotPosition(pos);
 
   return (
     <motion.mesh
-      position={[v.x, v.y, v.z]}
-      rotation={[-20 * degToRad, 0, 0]}
+      position={[posX, posY, posZ]}
+      rotation={[-15 * degToRad, 0, 0]}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
       onClick={() => onSelect()}
@@ -319,27 +400,24 @@ function RenderDialog() {
     <AnimatePresence>
       {idle && dialog && (
         <htmlMotion.div
-          key="dialog"
+          key={dialog.id}
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
         >
           <div className="bg-gray-500 p-[1cqw] text-[1.5cqw] rounded-[1cqw]">
+            <div className="text-center text-xs">
+              (for player P{dialog.player + 1})
+            </div>
             <div className="text-center">{dialog.title}</div>
-            {dialog.type === "yesno" && (
-              <DialogSelectYesNo type={dialog.type} />
+            {(dialog.type === "yesno" || dialog.type === "effectyn") && (
+              <DialogSelectYesNo dialog={dialog} />
             )}
-            {dialog.type === "effectyn" && (
-              <DialogSelectYesNo type={dialog.type} />
-            )}
-            {dialog.type === "cards" && (
-              <DialogSelectCard
-                cards={dialog.cards!}
-                min={dialog.min!}
-                max={dialog.max!}
-                canCancel={dialog.canCancel!}
-              />
+            {dialog.type === "cards" && <DialogSelectCard dialog={dialog} />}
+            {dialog.type === "chain" && <DialogSelectChain dialog={dialog} />}
+            {dialog.type === "position" && (
+              <DialogSelectPosition dialog={dialog} />
             )}
           </div>
         </htmlMotion.div>
@@ -348,18 +426,139 @@ function RenderDialog() {
   );
 }
 
+type DialogSelectPositionProps = {
+  dialog: DialogConfigPosition;
+};
+
+function DialogSelectPosition({
+  dialog: { positions, code },
+}: DialogSelectPositionProps) {
+  const [selected, setSelected] = useState<null | CardPosition>(null);
+  return (
+    <>
+      <div className="max-w-[30cqw] overflow-x-auto">
+        <div className="flex items-center justify-center gap-[1cqw] py-[1cqw]">
+          {positions.map((pos, i) => {
+            const faceup = pos === "up_atk" || pos === "up_def";
+            const def = pos === "down_def" || pos === "up_def";
+            return (
+              <div
+                key={i}
+                className="flex-none bg-gray-600 relative h-[9cqw] w-[9cqw] flex items-center justify-center"
+                onClick={() => setSelected(selected === pos ? null : pos)}
+              >
+                <img
+                  className={cn(
+                    "h-[8cqw] opacity-75",
+                    selected === pos && "opacity-100",
+                    def && "rotate-90",
+                  )}
+                  src={faceup ? textureCardFront(code) : textureCardBack}
+                  alt=""
+                />
+                {selected === pos && (
+                  <div className="absolute -top-3 -left-2 w-4 h-4">✅</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex items-center justify-center gap-[2cqw] mt-[1cqw]">
+        <Button
+          onClick={() => {
+            if (selected === null) {
+              return;
+            }
+            sendResponse({
+              type: OcgResponseType.SELECT_POSITION,
+              position: {
+                up_atk: OcgPosition.FACEUP_ATTACK,
+                up_def: OcgPosition.FACEUP_DEFENSE,
+                down_atk: OcgPosition.FACEDOWN_ATTACK,
+                down_def: OcgPosition.FACEDOWN_DEFENSE,
+              }[selected],
+            });
+            runSimulatorStep();
+          }}
+          aria-disabled={selected === null}
+        >
+          Confirm
+        </Button>
+      </div>
+    </>
+  );
+}
+
+type DialogSelectChainProps = {
+  dialog: DialogConfigChain;
+};
+
+function DialogSelectChain({
+  dialog: { cards, forced },
+}: DialogSelectChainProps) {
+  const [selected, setSelected] = useState<null | number>(null);
+  return (
+    <>
+      {cards.length === 0 ? (
+        <div className="text-gray-800">No effect applicable.</div>
+      ) : (
+        <div className="w-[30cqw] flex overflow-x-auto justify-center">
+          <div className="flex items-center justify-start gap-[1cqw] py-[1cqw]">
+            {cards.map((c, i) => (
+              <SelectableCard
+                key={i}
+                code={c.code}
+                selected={selected === i}
+                onSelect={() => setSelected(i)}
+                onUnselect={() => setSelected(null)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="flex items-center justify-center gap-[2cqw] mt-[1cqw]">
+        {!forced && (
+          <Button
+            onClick={() => {
+              sendResponse({
+                type: OcgResponseType.SELECT_CHAIN,
+                index: null,
+              });
+              runSimulatorStep();
+            }}
+          >
+            {cards.length === 0 ? "Continue" : "Cancel"}
+          </Button>
+        )}
+        {cards.length > 0 && (
+          <Button
+            onClick={() => {
+              if (selected === null) {
+                return;
+              }
+              sendResponse({
+                type: OcgResponseType.SELECT_CHAIN,
+                index: selected,
+              });
+              runSimulatorStep();
+            }}
+            aria-disabled={selected === null}
+          >
+            Select
+          </Button>
+        )}
+      </div>
+    </>
+  );
+}
+
 type DialogSelectCardProps = {
-  cards: Exclude<DialogConfig["cards"], undefined>;
-  min: number;
-  max: number;
-  canCancel: boolean;
+  dialog: DialogConfigCards;
 };
 
 function DialogSelectCard({
-  cards,
-  min,
-  max,
-  canCancel,
+  dialog: { min, max, cards, canCancel },
 }: DialogSelectCardProps) {
   const [selected, setSelected] = useState(() => new Set<number>());
 
@@ -367,37 +566,28 @@ function DialogSelectCard({
 
   return (
     <>
-      <div className="max-w-[30cqw] overflow-x-auto">
-        <div className="flex items-center gap-[1cqw] py-[1cqw]">
+      <div className="w-[30cqw] flex overflow-x-auto justify-center">
+        <div className="flex items-center justify-start gap-[1cqw] py-[1cqw]">
           {cards.map((c, i) => (
-            <div
+            <SelectableCard
               key={i}
-              className="flex-none bg-black"
-              onClick={() => {
+              code={c.code}
+              selected={selected.has(i)}
+              onSelect={() => {
                 if (min === 1 && min === max) {
                   setSelected(new Set([i]));
-                } else if (selected.has(i) && min > selected.size) {
-                  setSelected((s) => {
-                    const s1 = new Set(s);
-                    s1.delete(i);
-                    return s1;
-                  });
-                } else if (!selected.has(i) && max < selected.size) {
+                } else if (max < selected.size) {
                   setSelected((s) => new Set(s).add(i));
                 }
               }}
-            >
-              <img
-                className={cn(
-                  "h-[8cqw] opacity-50",
-                  selected.has(i) && "opacity-100",
-                )}
-                src={getProxiedUrl(
-                  `https://images.ygoprodeck.com/images/cards/${c.code}.jpg`,
-                )}
-                alt=""
-              />
-            </div>
+              onUnselect={() => {
+                setSelected((s) => {
+                  const s1 = new Set(s);
+                  s1.delete(i);
+                  return s1;
+                });
+              }}
+            />
           ))}
         </div>
       </div>
@@ -414,19 +604,31 @@ function DialogSelectCard({
         >
           Continue
         </Button>
-        {(canCancel || min === 0) && <Button onClick={() => {}}>Cancel</Button>}
+        {(canCancel || min === 0) && (
+          <Button
+            onClick={() => {
+              sendResponse({
+                type: OcgResponseType.SELECT_CARD,
+                indicies: canCancel ? null : [],
+              });
+              runSimulatorStep();
+            }}
+          >
+            Cancel
+          </Button>
+        )}
       </div>
     </>
   );
 }
 
-const Button = twc.button`py-[0.5cqw] px-[1cqw] rounded-[1cqw] bg-gray-800 text-white hover:bg-gray-700 aria-disabled:bg-gray-600`;
+const Button = twc.button`py-[0.5cqw] px-[1cqw] rounded-[1cqw] bg-gray-800 text-white hover:bg-gray-700 aria-disabled:bg-gray-600 aria-disabled:pointer-events-none`;
 
 type DialogSelectYesNoProps = {
-  type: "yesno" | "effectyn";
+  dialog: DialogConfigYesNo | DialogConfigEffectYesNo;
 };
 
-function DialogSelectYesNo({ type }: DialogSelectYesNoProps) {
+function DialogSelectYesNo({ dialog: { type } }: DialogSelectYesNoProps) {
   const handleClick = useCallback((yes: boolean) => {
     sendResponse({
       type:
@@ -446,62 +648,6 @@ function DialogSelectYesNo({ type }: DialogSelectYesNoProps) {
   );
 }
 
-const fieldEuler = [
-  new Euler(-20 * degToRad, 0, 0),
-  new Euler(-20 * degToRad, 0, 180 * degToRad),
-] as const;
-
-function useHandOffset(card: CardInfo) {
-  const {
-    pos: { controller, location },
-  } = card;
-  const playerField = useGameStore((s) => s.players[controller]);
-  const selectedCard = useGameStore((s) => s.selectedCard);
-  const idle = useGameStore((s) => s.events.length === 0);
-
-  const [hover, updateHover] = useState(false);
-  const isHover = idle && hover;
-
-  const selected = selectedCard && isCardPosEqual(selectedCard, card.pos);
-
-  let handOffsetY = 0;
-  let handOffsetZ = 0;
-  let handScale = 1;
-
-  if (location === "hand") {
-    const handSize = playerField.field.hand.length;
-    const mult = controller === 0 ? 1 : -1;
-    handOffsetY = selected ? 0.15 * mult : isHover ? 0.15 * mult : 0;
-    handScale = selected ? 1.05 : 1;
-    handOffsetZ = selected
-      ? (handSize + 1) * 0.01
-      : isHover
-        ? handSize * 0.01
-        : 0;
-  }
-
-  const mHandOffsetY = useAnimatedValue(handOffsetY, {
-    type: "tween",
-    duration: 0.15,
-  });
-  const mHandOffsetZ = useAnimatedValue(handOffsetZ, {
-    type: "tween",
-    duration: 0.15,
-  });
-  const mHandScale = useAnimatedValue(handScale, {
-    type: "tween",
-    duration: 0.15,
-  });
-
-  return {
-    mHandOffsetY,
-    mHandOffsetZ,
-    mHandScale,
-    hover,
-    updateHover,
-  };
-}
-
 interface RenderCardProps {
   card: CardInfo;
   wrapperRef: Ref<HTMLDivElement>;
@@ -509,7 +655,7 @@ interface RenderCardProps {
 
 function RenderCard({ card, wrapperRef }: RenderCardProps) {
   let {
-    pos: { location, controller, sequence, overlay },
+    pos: { location, sequence },
   } = card;
 
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
@@ -551,6 +697,9 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
         addCleanup(animateDrawTarget(event, nextState, card, ctx));
         addCleanup(animateHandSizeChange(event, nextState, card, ctx));
         break;
+      case "shuffle":
+        addCleanup(animateShuffle(event, nextState, card, ctx));
+        break;
     }
 
     if (cleanup.length > 0) {
@@ -574,7 +723,7 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
 
   const bindClick =
     location === "hand" || !isPileLocation(location) || sequence === 0;
-  const bindHover = location === "hand" && controller === 0;
+  const bindHover = location === "hand";
 
   const onPointerOver = useEventCallback((e: ThreeEvent<PointerEvent>) => {
     updateHover(true);
@@ -610,7 +759,9 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
         onPointerOut={bindHover ? onPointerOut : undefined}
         onClick={bindClick ? onClick : undefined}
       />
-      <RenderCardActions card={card} wrapperRef={wrapperRef} />
+      {isDirectInteractionLocation(location) && (
+        <RenderCardActions card={card} wrapperRef={wrapperRef} />
+      )}
     </motion.object3D>
   );
 }
@@ -683,18 +834,6 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
   );
 }
 
-function useAnimatedValue(
-  value: number,
-  config?: ValueAnimationTransition<number>,
-) {
-  const valueM = useMotionValue(value);
-  useEffect(() => {
-    const anim = animate(valueM, value, config);
-    return () => anim.stop();
-  }, [value]);
-  return valueM;
-}
-
 const cardScale = 2.5;
 
 interface RenderCardFrontProps extends ComponentProps<"mesh"> {
@@ -705,11 +844,23 @@ const RenderCardFront = memo(({ code, ...props }: RenderCardFrontProps) => {
   return (
     <mesh {...props}>
       {code > 0 ? (
-        <Suspense fallback={<meshStandardMaterial color={Color.NAMES.grey} />}>
+        <Suspense
+          fallback={
+            <meshStandardMaterial
+              color={Color.NAMES.grey}
+              metalness={0}
+              roughness={0.5}
+            />
+          }
+        >
           <CardTextureMaterial code={code} />
         </Suspense>
       ) : (
-        <meshStandardMaterial color={Color.NAMES.grey} />
+        <meshStandardMaterial
+          color={Color.NAMES.grey}
+          metalness={0}
+          roughness={0.5}
+        />
       )}
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
     </mesh>
@@ -723,9 +874,7 @@ type CardTextureMaterialProps = {
 };
 
 const CardTextureMaterial = memo(({ code }: CardTextureMaterialProps) => {
-  const frontTexture = useTexture(
-    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`),
-  );
+  const frontTexture = useTexture(textureCardFront(code));
   return <meshStandardMaterial map={frontTexture} />;
 });
 
@@ -733,10 +882,18 @@ CardTextureMaterial.displayName = "CardTextureMaterial";
 
 interface RenderCardBackProps extends ComponentProps<"mesh"> {}
 
-const RenderCardBack = memo(({}: RenderCardBackProps) => {
+const RenderCardBack = memo(({ ...props }: RenderCardBackProps) => {
   return (
-    <mesh rotation={[0, 180 * degToRad, 0]}>
-      <Suspense fallback={<meshStandardMaterial color={Color.NAMES.brown} />}>
+    <mesh rotation={[0, 180 * degToRad, 0]} {...props}>
+      <Suspense
+        fallback={
+          <meshStandardMaterial
+            color={Color.NAMES.brown}
+            metalness={0}
+            roughness={0.5}
+          />
+        }
+      >
         <CardBackMaterial />
       </Suspense>
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
@@ -747,12 +904,10 @@ const RenderCardBack = memo(({}: RenderCardBackProps) => {
 RenderCardBack.displayName = "RenderCardBack";
 
 const CardBackMaterial = memo(() => {
-  const backTexture = useTexture(
-    getProxiedUrl(
-      "https://ms.yugipedia.com//thumb/e/e5/Back-EN.png/800px-Back-EN.png",
-    ),
+  const backTexture = useTexture(textureCardBack);
+  return (
+    <meshStandardMaterial map={backTexture} metalness={0} roughness={0.5} />
   );
-  return <meshStandardMaterial map={backTexture} />;
 });
 
 type RenderCardOverlayProps = {
@@ -767,7 +922,7 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
     );
   }, [actions]);
 
-  const [overlayTexture] = useTexture(["/images/card-highlight.png"]);
+  const overlayTexture = useTexture(textureHighlight);
 
   if (actions.length === 0 || !idle) {
     return null;
@@ -776,40 +931,61 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
   const color = hasActivateOrSS ? 0xfaf148 : 0x79a6d9;
 
   return (
-    <motion.mesh
-      position-z={-0.001}
-      transition={{
-        repeat: Infinity,
-        repeatType: "reverse",
-        duration: 0.5,
-        type: "tween",
-        ease: "easeInOut",
-      }}
-      initial={{ scale: 1, opacity: 0.2 }}
-      animate={{ scale: 1.02, opacity: 0.3 }}
-    >
-      <meshStandardMaterial
-        color={color}
-        alphaMap={overlayTexture}
-        transparent
-      />
-      <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
-    </motion.mesh>
+    <>
+      <motion.mesh
+        position-z={-0.001}
+        transition={{
+          repeat: Infinity,
+          repeatType: "reverse",
+          duration: 0.5,
+          type: "tween",
+          ease: "easeInOut",
+        }}
+        initial={{ scale: 1, opacity: 0.2 }}
+        animate={{ scale: 1.02, opacity: 0.3 }}
+      >
+        <meshStandardMaterial
+          color={color}
+          alphaMap={overlayTexture}
+          transparent
+        />
+        <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
+      </motion.mesh>
+      <motion.mesh
+        rotation={[0, 180 * degToRad, 0]}
+        position-z={0.001}
+        transition={{
+          repeat: Infinity,
+          repeatType: "reverse",
+          duration: 0.5,
+          type: "tween",
+          ease: "easeInOut",
+        }}
+        initial={{ scale: 1, opacity: 0.2 }}
+        animate={{ scale: 1.02, opacity: 0.3 }}
+      >
+        <meshStandardMaterial
+          color={color}
+          alphaMap={overlayTexture}
+          transparent
+        />
+        <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
+      </motion.mesh>
+    </>
   );
 }
 
-interface GameWrapperProps extends RefAttributes<HTMLDivElement> {
-  children?: ReactNode;
-}
+interface GameWrapperProps extends ComponentPropsWithRef<"div"> {}
 
-function GameWrapper({ ref, children }: GameWrapperProps) {
+function GameWrapper({ className, ...props }: GameWrapperProps) {
   return (
     <div
-      ref={ref}
-      className="relative bg-gray-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container"
-    >
-      {children}
-    </div>
+      className={cn(
+        "relative bg-gray-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container",
+        className,
+      )}
+      {...props}
+    />
   );
 }
 
@@ -832,10 +1008,6 @@ function useAllCards() {
     }
     return ret;
   }, [players]);
-}
-
-function getProxiedUrl(url: string) {
-  return `/api/proxy/${encodeURIComponent(url)}`;
 }
 
 // type TestMaterialProps = ShaderMaterialProps & {};

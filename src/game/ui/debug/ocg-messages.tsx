@@ -1,7 +1,8 @@
 import {
   OcgCardLocPos,
+  ocgHintTimingParse,
+  ocgHintTimingString,
   OcgHintType,
-  OcgLocation,
   ocgLocationString,
   OcgMessage,
   OcgMessageType,
@@ -11,7 +12,7 @@ import {
 } from "ocgcore-wasm";
 import { Fragment, ReactNode } from "react";
 import { omit } from "remeda";
-import { parseFieldMask } from "../../../lib/parse-field-mask";
+import { fieldMaskMapping } from "../../../lib/parse-field-mask";
 import { getCardName, getHint } from "../../runner";
 import { useGameStore } from "../../state";
 
@@ -117,6 +118,7 @@ function messageContent(m: OcgMessage) {
       );
     }
     case OcgMessageType.SELECT_IDLECMD: {
+      // TODO: add information in activates
       return (
         <>
           <div>
@@ -142,9 +144,44 @@ function messageContent(m: OcgMessage) {
     }
     case OcgMessageType.SELECT_PLACE: {
       const mask = produceMask(m.field_mask);
-      return <div className="whitespace-pre">{mask}</div>;
+      return (
+        <>
+          <div>Player: P{m.player + 1}</div>
+          <div className="whitespace-pre">{mask}</div>
+        </>
+      );
+    }
+    case OcgMessageType.SELECT_CHAIN: {
+      // TODO: add information in activates
+      return (
+        <>
+          <div>Player: P{m.player + 1}</div>
+          <div>Forced: {bool(m.forced)}</div>
+          <div>SPECOUNT: {m.spe_count}</div>
+          <div>
+            Hint timing:{" "}
+            {join(
+              ocgHintTimingParse(m.hint_timing).map((h) =>
+                ocgHintTimingString.get(h),
+              ),
+            )}
+          </div>
+          <div>
+            Hint timing other:{" "}
+            {join(
+              ocgHintTimingParse(m.hint_timing_other).map((h) =>
+                ocgHintTimingString.get(h),
+              ),
+            )}
+          </div>
+          <div>Activate: {join(m.selects.map((s) => card(s.code, s)))}</div>
+        </>
+      );
     }
     case OcgMessageType.SUMMONING: {
+      return <div>{card(m.code, m)}</div>;
+    }
+    case OcgMessageType.SET: {
       return <div>{card(m.code, m)}</div>;
     }
     default: {
@@ -157,58 +194,63 @@ function messageContent(m: OcgMessage) {
   }
 }
 
-const maskContentMap = new Map<number, string>([
-  [1, " mm "],
-  [2, " st "],
-  [3, " fs "],
-  [4, " emz"],
-  [5, " pl "],
-  [6, " pr "],
-]);
-
-function produceMask(fieldMask: number) {
-  const field = parseFieldMask(fieldMask);
-  const h = (c: 0 | 1, m: 0 | 1, s: number, r: number) =>
-    field.some(
-      (x) =>
-        x.controller === c &&
-        x.location === (m ? OcgLocation.MZONE : OcgLocation.SZONE) &&
-        x.sequence === s,
-    )
-      ? r
-      : -r;
-
-  const a = <T,>(length: number, map: (v: number) => T): T[] => {
-    return Array.from({ length }, (_, i) => map(i));
-  };
-  const r = <T,>(length: number, map: (v: number) => T): T[] => {
-    return Array.from({ length }, (_, i) => map(length - 1 - i));
-  };
-
-  const result = [
-    [h(1, 0, 7, 6), ...r(5, (x) => h(1, 0, x, 2)), h(1, 0, 6, 5)],
-    [0, ...r(5, (x) => h(1, 1, x, 1)), h(1, 0, 5, 3)],
-    [0, 0, h(1, 1, 6, 4), 0, h(1, 1, 5, 4), 0, 0],
-    [0, 0, h(0, 1, 5, 4), 0, h(0, 1, 6, 4), 0, 0],
-    [h(0, 0, 5, 3), ...a(5, (x) => h(0, 1, x, 1)), 0],
-    [h(0, 0, 6, 5), ...a(5, (x) => h(0, 0, x, 2)), h(0, 0, 7, 6)],
-  ];
-
-  const renderCell = (cell: number) => {
-    if (cell === 0) {
-      return "    ";
-    }
-    const content = maskContentMap.get(Math.abs(cell));
-    return cell > 0 ? (
+function produceMask(m: number) {
+  const v = (val: number, content: string) =>
+    (m & val) === 0 ? (
       <span className="text-white">{content}</span>
     ) : (
       <span className="text-gray-500">{content}</span>
     );
-  };
+  const fm = fieldMaskMapping;
 
-  const renderLine = (line: number[]) => join(line.map(renderCell), null);
+  const empt = "    ";
+  const v0m0 = v(fm["0m0"], " mm ");
+  const v0m1 = v(fm["0m1"], " mm ");
+  const v0m2 = v(fm["0m2"], " mm ");
+  const v0m3 = v(fm["0m3"], " mm ");
+  const v0m4 = v(fm["0m4"], " mm ");
+  const v0e0 = v(fm["0e0"], " em ");
+  const v0e1 = v(fm["0e1"], " em ");
+  const v0s0 = v(fm["0s0"], " st ");
+  const v0s1 = v(fm["0s1"], " st ");
+  const v0s2 = v(fm["0s2"], " st ");
+  const v0s3 = v(fm["0s3"], " st ");
+  const v0s4 = v(fm["0s4"], " st ");
+  const v0fs = v(fm["0fs"], " fs ");
+  const v0p0 = v(fm["0p0"], " pl ");
+  const v0p1 = v(fm["0p1"], " pr ");
+  const v1m0 = v(fm["1m0"], " mm ");
+  const v1m1 = v(fm["1m1"], " mm ");
+  const v1m2 = v(fm["1m2"], " mm ");
+  const v1m3 = v(fm["1m3"], " mm ");
+  const v1m4 = v(fm["1m4"], " mm ");
+  const v1e0 = v(fm["1e0"], " em ");
+  const v1e1 = v(fm["1e1"], " em ");
+  const v1s0 = v(fm["1s0"], " st ");
+  const v1s1 = v(fm["1s1"], " st ");
+  const v1s2 = v(fm["1s2"], " st ");
+  const v1s3 = v(fm["1s3"], " st ");
+  const v1s4 = v(fm["1s4"], " st ");
+  const v1fs = v(fm["1fs"], " fs ");
+  const v1p0 = v(fm["1p0"], " pl ");
+  const v1p1 = v(fm["1p1"], " pr ");
 
-  return join(result.map(renderLine), "\n");
+  return (
+    <>
+      {join([v1p1, v1s4, v1s3, v1s2, v1s1, v1s0, v1p0], "")}
+      {"\n"}
+      {join([empt, v1m4, v1m3, v1m2, v1m1, v1m0, v1fs], "")}
+      {"\n"}
+      {join([empt, empt, v1e1, empt, v1e0, empt, empt], "")}
+      {"\n"}
+      {join([empt, empt, v0e1, empt, v0e0, empt, empt], "")}
+      {"\n"}
+      {join([empt, v0m0, v0m1, v0m2, v0m3, v0m4, v0fs], "")}
+      {"\n"}
+      {join([v0p1, v0s0, v0s1, v0s2, v0s3, v0s4, v0p0], "")}
+      {"\n"}
+    </>
+  );
 }
 
 function join(

@@ -78,8 +78,8 @@ importers:
         specifier: ^10.1.1
         version: 10.1.1
       ocgcore-wasm:
-        specifier: ^0.0.29
-        version: 0.0.29
+        specifier: ^0.0.30
+        version: 0.0.30
       postcss:
         specifier: ^8.5.1
         version: 8.5.1
@@ -98,6 +98,9 @@ importers:
       react-twc:
         specifier: ^1.4.2
         version: 1.4.2(@types/react@19.0.7)(react@19.0.0)
+      react-use-measure:
+        specifier: ^2.1.1
+        version: 2.1.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       remeda:
         specifier: ^2.19.1
         version: 2.19.1
@@ -1679,8 +1682,8 @@ packages:
     resolution: {integrity: sha512-kDCGIbxkDSXE3euJZZXzc6to7fCrKHNI/hSRQnRuQ+BWjFNzZwiFF8fj/6o2t2G9/jTj8PSIYTfCLelLZEeRpA==}
     engines: {node: '>= 0.4'}
 
-  ocgcore-wasm@0.0.29:
-    resolution: {integrity: sha512-ZlCN/xz0VbwW8ZE7Xmb2mgXl5ctN5BifKNOFpYa50Juc4C8pFoHQFa0wV91GZ2GEw8qv0BGxWcC13Lgg1Q/fJQ==}
+  ocgcore-wasm@0.0.30:
+    resolution: {integrity: sha512-hEqAOUV4vlFufsNSWtluHaVOX+6bQIKR2jA9YLwk/IMFq75cLdPmjY8aiFIu0Z1z+pyJutP90JCqypJyUWJXTA==}
 
   on-finished@2.4.1:
     resolution: {integrity: sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==}
@@ -1868,6 +1871,12 @@ packages:
 
   react-twc@1.4.2:
     resolution: {integrity: sha512-ix8Z1dNacL29Vri3rWsQqRYMQXWCNzbI1qhz0yyvcbO057HZwz3rXZDQ7TcOE1hQ7EHornX3ka2reO27RmXiYA==}
+
+  react-use-measure@2.1.1:
+    resolution: {integrity: sha512-nocZhN26cproIiIduswYpV5y5lQpSQS1y/4KuvUCjSKmw7ZWIS/+g3aFnX3WdBkyuGUtTLif3UTqnLLhbDoQig==}
+    peerDependencies:
+      react: '>=16.13'
+      react-dom: '>=16.13'
 
   react@19.0.0:
     resolution: {integrity: sha512-V8AVnmPIICiWpGfm6GLzCR/W5FXLchHop40W4nXBmdlEceh16rCN8O8LNWm5bh5XUX91fh7KpA+W0TgMKmgTpQ==}
@@ -3731,7 +3740,7 @@ snapshots:
 
   object-inspect@1.13.3: {}
 
-  ocgcore-wasm@0.0.29: {}
+  ocgcore-wasm@0.0.30: {}
 
   on-finished@2.4.1:
     dependencies:
@@ -3895,6 +3904,12 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
       - react
+
+  react-use-measure@2.1.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0):
+    dependencies:
+      debounce: 1.2.1
+      react: 19.0.0
+      react-dom: 19.0.0(react@19.0.0)
 
   react@19.0.0: {}
 

@@ -1,22 +1,41 @@
+import { useAnimatedValue } from "@/lib/hooks/use-animated-value";
 import { useMotionValue } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Euler, Vector3 } from "three";
 import { useShallow } from "zustand/react/shallow";
 import {
+  CardFieldPos,
   CardInfo,
   CardPos,
   GameState,
+  isCardPosEqual,
   isFieldLocation,
   PlayerState,
   useGameStore,
 } from "../state";
 
-const degToRad = Math.PI / 180;
+export const degToRad = Math.PI / 180;
+
+export const fieldRotation = 15;
 
 const fieldEuler = [
-  new Euler(-20 * degToRad, 0, 0),
-  new Euler(-20 * degToRad, 0, 180 * degToRad),
+  new Euler(-fieldRotation * degToRad, 0, 0),
+  new Euler(-fieldRotation * degToRad, 0, 180 * degToRad),
 ] as const;
+
+export const getFieldSlotPosition = (() => {
+  const vec = new Vector3();
+
+  return function getFieldSlotPosition(pos: CardFieldPos) {
+    if (pos.location === "spellZone") {
+      vec.set((pos.sequence - 2) * 2.5, -6, 0.01);
+    } else if (pos.location === "mainMonsterZone") {
+      vec.set((pos.sequence - 2) * 2.5, -3, 0.01);
+    }
+    vec.applyEuler(fieldEuler[pos.controller]);
+    return [vec.x, vec.y, vec.z] as const;
+  };
+})();
 
 export const getCardPosition = (() => {
   const vec = new Vector3();
@@ -56,13 +75,9 @@ export const getCardPosition = (() => {
     } else if (location === "hand") {
       const [posX, posY, posZ] = handPosition(pos, sizes);
       vec.set(posX, posY, posZ);
-      rot.set(0, 0, 0);
+      rot.set(0, 0, controller === 1 ? 180 * degToRad : 0);
       vecFinal.copy(vec);
       rotFinal.copy(rot);
-
-      if (faceDown && controller === 1) {
-        rotFinal.y += 180 * degToRad;
-      }
     }
 
     return [
@@ -120,12 +135,12 @@ const getCardLocalFieldPosition = (() => {
         break;
       }
       case "grave": {
-        position.set(7.5, -3, (sizes.grave - sequence) * 0.01);
+        position.set(7.5, -3, (sequence + 1) * 0.01);
         rotation.set(0, 0, 0);
         break;
       }
       case "banish": {
-        position.set(7.5, 0, (sizes.banish - sequence) * 0.01);
+        position.set(7.5, 0, (sequence + 1) * 0.01);
         rotation.set(0, 0, 90 * degToRad);
         break;
       }
@@ -172,12 +187,20 @@ export function useComputeCardPosition(card: CardInfo) {
 
   const sizes = useControllerSizes(controller);
 
-  const mPosX = useMotionValue(0);
-  const mPosY = useMotionValue(0);
-  const mPosZ = useMotionValue(0);
-  const mRotX = useMotionValue(0);
-  const mRotY = useMotionValue(0);
-  const mRotZ = useMotionValue(0);
+  const [initialPosition] = useState(() => {
+    const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
+      card,
+      sizes,
+    );
+    return { posX, posY, posZ, rotX, rotY, rotZ };
+  });
+
+  const mPosX = useMotionValue(initialPosition.posX);
+  const mPosY = useMotionValue(initialPosition.posY);
+  const mPosZ = useMotionValue(initialPosition.posZ);
+  const mRotX = useMotionValue(initialPosition.rotX);
+  const mRotY = useMotionValue(initialPosition.rotY);
+  const mRotZ = useMotionValue(initialPosition.rotZ);
 
   useEffect(() => {
     const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
@@ -196,4 +219,55 @@ export function useComputeCardPosition(card: CardInfo) {
     [mPosX, mPosY, mPosZ],
     [mRotX, mRotY, mRotZ],
   ] as const;
+}
+
+export function useHandOffset(card: CardInfo) {
+  const {
+    pos: { controller, location },
+  } = card;
+  const playerField = useGameStore((s) => s.players[controller]);
+  const selectedCard = useGameStore((s) => s.selectedCard);
+  const idle = useGameStore((s) => s.events.length === 0);
+
+  const [hover, updateHover] = useState(false);
+  const isHover = idle && hover;
+
+  const selected = selectedCard && isCardPosEqual(selectedCard, card.pos);
+
+  let handOffsetY = 0;
+  let handOffsetZ = 0;
+  let handScale = 1;
+
+  if (location === "hand") {
+    const handSize = playerField.field.hand.length;
+    const mult = controller === 0 ? 1 : -1;
+    handOffsetY = selected ? 0.15 * mult : isHover ? 0.15 * mult : 0;
+    handScale = selected ? 1.05 : 1;
+    handOffsetZ = selected
+      ? (handSize + 1) * 0.01
+      : isHover
+        ? handSize * 0.01
+        : 0;
+  }
+
+  const mHandOffsetY = useAnimatedValue(handOffsetY, {
+    type: "tween",
+    duration: 0.15,
+  });
+  const mHandOffsetZ = useAnimatedValue(handOffsetZ, {
+    type: "tween",
+    duration: 0.15,
+  });
+  const mHandScale = useAnimatedValue(handScale, {
+    type: "tween",
+    duration: 0.15,
+  });
+
+  return {
+    mHandOffsetY,
+    mHandOffsetZ,
+    mHandScale,
+    hover,
+    updateHover,
+  };
 }

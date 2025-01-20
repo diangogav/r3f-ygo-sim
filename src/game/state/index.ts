@@ -87,20 +87,58 @@ export type CardFieldPos = {
   sequence: number;
 };
 
-export type DialogConfig = {
+interface DialogConfigBase {
+  id: string;
   title: string;
-  type: "yesno" | "effectyn" | "cards";
-  min?: number;
-  max?: number;
-  canCancel?: boolean;
-  cards?: {
+  player: 0 | 1;
+}
+
+export interface DialogConfigYesNo extends DialogConfigBase {
+  type: "yesno";
+}
+
+export interface DialogConfigEffectYesNo extends DialogConfigBase {
+  type: "effectyn";
+}
+
+export interface DialogConfigCards extends DialogConfigBase {
+  type: "cards";
+  min: number;
+  max: number;
+  canCancel: boolean;
+  cards: {
     code: number;
     controller: 0 | 1;
     location: CardLocation;
     position: CardPosition;
     sequence: number;
   }[];
-};
+}
+
+export interface DialogConfigChain extends DialogConfigBase {
+  type: "chain";
+  forced: boolean;
+  cards: {
+    code: number;
+    controller: 0 | 1;
+    location: CardLocation;
+    position: CardPosition;
+    sequence: number;
+  }[];
+}
+
+export interface DialogConfigPosition extends DialogConfigBase {
+  type: "position";
+  code: number;
+  positions: CardPosition[];
+}
+
+export type DialogConfig =
+  | DialogConfigYesNo
+  | DialogConfigEffectYesNo
+  | DialogConfigCards
+  | DialogConfigChain
+  | DialogConfigPosition;
 
 export type PlayerState = {
   field: {
@@ -300,6 +338,22 @@ function updateCards(state: EventfulGameState, cards: PartialCardInfo[]) {
   };
 }
 
+const directInteractionLocations = [
+  "hand",
+  "spellZone",
+  "fieldZone",
+  "extraMonsterZone",
+  "mainMonsterZone",
+] as const;
+
+export function isDirectInteractionLocation(
+  location: CardLocation,
+): location is (typeof directInteractionLocations)[number] {
+  return (directInteractionLocations as readonly CardLocation[]).includes(
+    location,
+  );
+}
+
 const pileLocations = ["hand", "deck", "grave", "extra", "banish"] as const;
 
 export function isPileLocation(
@@ -323,6 +377,19 @@ export function isFieldLocation(
   location: CardLocation,
 ): location is (typeof fieldLocations)[number] {
   return (fieldLocations as readonly CardLocation[]).includes(location);
+}
+
+const fieldNotPileLocations = [
+  "spellZone",
+  "fieldZone",
+  "extraMonsterZone",
+  "mainMonsterZone",
+] as const;
+
+export function isFieldNotPileLocation(
+  location: CardLocation,
+): location is (typeof fieldNotPileLocations)[number] {
+  return (fieldNotPileLocations as readonly CardLocation[]).includes(location);
 }
 
 // function cardWithPos<C extends CardInfo | null>(

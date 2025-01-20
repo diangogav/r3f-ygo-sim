@@ -28,3 +28,36 @@ export function parseFieldMask(mask: number) {
   parseFieldMaskPlayer(mask >> 16, 1, places);
   return places;
 }
+
+export const fieldMaskMapping = {
+  "0m0": 1 << 0x00,
+  "0m1": 1 << 0x01,
+  "0m2": 1 << 0x02,
+  "0m3": 1 << 0x03,
+  "0m4": 1 << 0x04,
+  "0e0": 1 << 0x05,
+  "0e1": 1 << 0x06,
+  "0s0": 1 << 0x08,
+  "0s1": 1 << 0x09,
+  "0s2": 1 << 0x0a,
+  "0s3": 1 << 0x0b,
+  "0s4": 1 << 0x0c,
+  "0fs": 1 << 0x0d,
+  "0p0": 1 << 0x0e,
+  "0p1": 1 << 0x0f,
+  "1m0": 1 << 0x10,
+  "1m1": 1 << 0x11,
+  "1m2": 1 << 0x12,
+  "1m3": 1 << 0x13,
+  "1m4": 1 << 0x14,
+  "1e0": 1 << 0x15,
+  "1e1": 1 << 0x16,
+  "1s0": 1 << 0x18,
+  "1s1": 1 << 0x19,
+  "1s2": 1 << 0x1a,
+  "1s3": 1 << 0x1b,
+  "1s4": 1 << 0x1c,
+  "1fs": 1 << 0x1d,
+  "1p0": 1 << 0x1e,
+  "1p1": 1 << 0x1f,
+};

@@ -22,8 +22,14 @@ export interface DuelEventPhase {
   type: "phase";
 }
 
+export interface DuelEventShuffle {
+  type: "shuffle";
+  player: 0 | 1;
+}
+
 export type DuelEvent =
   | DuelEventStart
   | DuelEventDraw
   | DuelEventMove
+  | DuelEventShuffle
   | DuelEventPhase;

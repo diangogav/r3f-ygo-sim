@@ -18,6 +18,7 @@ import createCore, {
   SelectIdleCMDAction,
   ocgLogTypeString,
   ocgMessageTypeStrings,
+  ocgPositionParse,
 } from "ocgcore-wasm";
 import coreUrl from "ocgcore-wasm/lib/ocgcore.sync.wasm?url";
 import type { LoadDeckResponse, LoadDeckResponseCard } from "../handler";
@@ -28,6 +29,7 @@ import {
   CardFieldPos,
   CardInfo,
   CardPos,
+  CardPosition,
   PartialCardInfo,
   cardPos,
   eventfulGS,
@@ -566,14 +568,6 @@ export function runSimulatorStep() {
         const position = convertPosition(m.to.position)!;
         const code = dest.location === "deck" ? 0 : m.card;
 
-        const cardLoc = ({
-          location: l,
-          sequence: s,
-          controller: c,
-        }: CardPos) => `${l}[${s}] (player ${c + 1}) `;
-
-        console.log(`Moving card from ${cardLoc(source)} to ${cardLoc(dest)}`);
-
         const card = getCardInPos(egs(), source)!;
         const nextState = moveCard(egs(), { ...card, code, position }, dest);
         gs().queueEvent({
@@ -588,16 +582,21 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SET: {
-        console.log(`Card was set.`);
         break;
       }
       case OcgMessageType.SHUFFLE_HAND: {
-        console.log(`Shuffle hand of player ${m.player + 1}`);
-        reorderHand(gs(), m.player as 0 | 1, m.cards);
+        if (m.cards.length === 0) {
+          break;
+        }
+        const player = m.player as 0 | 1;
+        const nextState = reorderHand(egs(), player, m.cards);
+        gs().queueEvent({
+          event: { type: "shuffle", player },
+          nextState,
+        });
         break;
       }
       case OcgMessageType.SHUFFLE_DECK: {
-        console.log(`Shuffle deck for player ${m.player + 1}`);
         break;
       }
       case OcgMessageType.SUMMONING: {
@@ -642,25 +641,34 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SELECT_CHAIN: {
-        console.log(`Select chain for Player ${m.player + 1}`);
-        const actions: CardAction[] = [];
-
-        if (m.selects.length === 0 || !m.forced) {
-          actions.push({
-            kind: "continue",
-            response: { type: OcgResponseType.SELECT_CHAIN, index: -1 },
-            pos: null,
-          });
-        }
-
-        for (const [index, action] of m.selects.entries()) {
-          actions.push({
-            kind: "activate",
-            response: { type: OcgResponseType.SELECT_CHAIN, index },
-            pos: convertLocation(action),
-          });
-        }
-        gs().setActions(actions);
+        // const actions: CardAction[] = [];
+        // if (m.selects.length === 0 || !m.forced) {
+        //   actions.push({
+        //     kind: "continue",
+        //     response: { type: OcgResponseType.SELECT_CHAIN, index: -1 },
+        //     pos: null,
+        //   });
+        // }
+        // for (const [index, action] of m.selects.entries()) {
+        //   actions.push({
+        //     kind: "activate",
+        //     response: { type: OcgResponseType.SELECT_CHAIN, index },
+        //     pos: convertLocation(action),
+        //   });
+        // }
+        // gs().setActions(actions);
+        gs().openDialog({
+          id: crypto.randomUUID(),
+          title: m.forced ? `Chain an optional effect.` : "Chain an effect.",
+          type: "chain",
+          player: m.player as 0 | 1,
+          forced: m.forced,
+          cards: m.selects.map((s) => ({
+            code: s.code,
+            ...convertLocation(s)!,
+            position: convertPosition(s.position)!,
+          })),
+        });
         break;
       }
       case OcgMessageType.SELECT_YESNO: {
@@ -669,7 +677,9 @@ export function runSimulatorStep() {
           `Select Yes/No message for player ${m.player + 1}: ${title}`,
         );
         gs().openDialog({
+          id: crypto.randomUUID(),
           title: title ?? `${m.description}`,
+          player: m.player as 0 | 1,
           type: "yesno",
         });
         break;
@@ -705,16 +715,20 @@ export function runSimulatorStep() {
         );
 
         gs().openDialog({
+          id: crypto.randomUUID(),
           title: text,
           type: "effectyn",
+          player: m.player as 0 | 1,
         });
         break;
       }
       case OcgMessageType.SELECT_CARD: {
         console.log(`Select cards for player ${m.player + 1}.`);
         gs().openDialog({
+          id: crypto.randomUUID(),
           title: `Select ${m.min} to ${m.max} card(s).`,
           type: "cards",
+          player: m.player as 0 | 1,
           min: m.min,
           max: m.max,
           canCancel: m.can_cancel,
@@ -727,10 +741,25 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SELECT_PLACE: {
-        console.log(`Select place for player ${m.player + 1}.`);
         gs().setFieldSelect({
-          positions: parseFieldMask(m.field_mask),
+          positions: parseFieldMask(m.field_mask).map((c) => ({
+            ...c,
+            controller:
+              m.player === 0 ? c.controller : ((1 - c.controller) as 0 | 1),
+          })),
           count: m.count,
+        });
+        break;
+      }
+      case OcgMessageType.SELECT_POSITION: {
+        const positions = ocgPositionParse(m.positions).map(convertPosition);
+        gs().openDialog({
+          id: crypto.randomUUID(),
+          title: `Select position for ${getCardName(m.code)}`,
+          type: "position",
+          player: m.player as 0 | 1,
+          code: m.code,
+          positions: positions as CardPosition[],
         });
         break;
       }
@@ -853,9 +882,13 @@ export function sendResponse(resp: OcgResponse) {
   ocg.duelSetResponse(gameInstance, resp);
 }
 
-export function getHint(inCode: bigint): string | null {
-  const code = Number(inCode >> 20n);
-  const stringId = Number(inCode & 0xfffffn);
+export function getHint(inCode: bigint | number): string | null {
+  const code = Number(
+    typeof inCode === "bigint" ? inCode >> 20n : inCode >> 20,
+  );
+  const stringId = Number(
+    typeof inCode === "bigint" ? inCode & 0xfffffn : inCode & 0xfffff,
+  );
   if (code == 0) {
     return loadedData.strings.system.get(stringId) ?? null;
   }
