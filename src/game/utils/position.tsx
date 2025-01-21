@@ -37,13 +37,13 @@ export const getFieldSlotPosition = (() => {
   };
 })();
 
-export const getCardPosition = (() => {
+export const getCardPositionObj = (() => {
   const vec = new Vector3();
   const vecFinal = new Vector3();
   const rot = new Euler();
   const rotFinal = new Euler();
 
-  return function getCardPosition(
+  return function getCardPositionObj(
     { pos, position }: CardInfo,
     sizes: ControllerSizes,
   ) {
@@ -80,12 +80,24 @@ export const getCardPosition = (() => {
       rotFinal.copy(rot);
     }
 
-    return [
-      [vecFinal.x, vecFinal.y, vecFinal.z],
-      [rotFinal.x, rotFinal.y, rotFinal.z],
-    ] as const;
+    return {
+      px: vecFinal.x,
+      py: vecFinal.y,
+      pz: vecFinal.z,
+      rx: rotFinal.x,
+      ry: rotFinal.y,
+      rz: rotFinal.z,
+    };
   };
 })();
+
+export function getCardPosition(info: CardInfo, sizes: ControllerSizes) {
+  const res = getCardPositionObj(info, sizes);
+  return [
+    [res.px, res.py, res.pz],
+    [res.rx, res.ry, res.rz],
+  ] as const;
+}
 
 function handPosition(
   { controller, sequence }: CardPos,
@@ -185,6 +197,7 @@ export function useComputeCardPosition(card: CardInfo) {
     position,
   } = card;
 
+  const idle = useGameStore((s) => s.events.length === 0);
   const sizes = useControllerSizes(controller);
 
   const [initialPosition] = useState(() => {
@@ -203,6 +216,9 @@ export function useComputeCardPosition(card: CardInfo) {
   const mRotZ = useMotionValue(initialPosition.rotZ);
 
   useEffect(() => {
+    if (!idle) {
+      return;
+    }
     const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
       card,
       sizes,
@@ -213,7 +229,7 @@ export function useComputeCardPosition(card: CardInfo) {
     mRotX.jump(rotX);
     mRotY.jump(rotY);
     mRotZ.jump(rotZ);
-  }, [controller, location, overlay, sequence, position, sizes]);
+  }, [idle, controller, location, overlay, sequence, position, sizes]);
 
   return [
     [mPosX, mPosY, mPosZ],

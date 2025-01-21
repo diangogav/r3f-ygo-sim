@@ -52,9 +52,15 @@ export type CardAction = {
     | "setMonster"
     | "setSpell"
     | "changePos";
-  pos: CardPos | null;
+  card: CardInfo | null;
   response: OcgResponse;
 };
+
+export type CardActionBundle = CardAction["kind"] extends infer T
+  ? T extends CardAction["kind"]
+    ? { kind: `many_${T}`; actions: (CardAction & { type: T })[] }
+    : never
+  : never;
 
 export type CardInfo = {
   id: string;
@@ -127,6 +133,11 @@ export interface DialogConfigChain extends DialogConfigBase {
   }[];
 }
 
+export interface DialogConfigActionMany extends DialogConfigBase {
+  type: "actionMany";
+  actions: CardAction[];
+}
+
 export interface DialogConfigPosition extends DialogConfigBase {
   type: "position";
   code: number;
@@ -138,6 +149,7 @@ export type DialogConfig =
   | DialogConfigEffectYesNo
   | DialogConfigCards
   | DialogConfigChain
+  | DialogConfigActionMany
   | DialogConfigPosition;
 
 export type PlayerState = {

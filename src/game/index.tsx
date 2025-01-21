@@ -1,22 +1,32 @@
 import {
   Html,
   PerspectiveCamera,
+  useGLTF,
   useProgress,
   useTexture,
 } from "@react-three/drei";
-import { extend, ThreeEvent } from "@react-three/fiber";
+import { Canvas, extend, ThreeElements, ThreeEvent } from "@react-three/fiber";
+import {
+  Bloom,
+  EffectComposer,
+  N8AO,
+  SMAA,
+  Vignette,
+} from "@react-three/postprocessing";
 import {
   AnimatePresence,
   motion as htmlMotion,
+  MotionValue,
   useTransform,
 } from "framer-motion";
-import { motion, MotionCanvas } from "framer-motion-3d";
+import { motion } from "framer-motion-3d";
 import { OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
   ComponentPropsWithRef,
   memo,
   Ref,
+  RefObject,
   Suspense,
   use,
   useCallback,
@@ -26,6 +36,7 @@ import {
   useState,
 } from "react";
 import { twc } from "react-twc";
+import * as R from "remeda";
 import {
   Color,
   DirectionalLight,
@@ -39,25 +50,21 @@ import {
 } from "three";
 import { useEventCallback } from "usehooks-ts";
 import { cn } from "../lib/cn";
+import { CardAnimations, CardMotionValues } from "./animations";
 import {
-  animateDrawTarget,
-  animateHandSizeChange,
-  animateMove,
-  animateShuffle,
-  AnimationCleanup,
-} from "./animations";
-import {
-  convertGameLocation,
   gameInstancePromise,
+  gs,
   loadedData,
   runSimulatorStep,
   sendResponse,
 } from "./runner";
+import { GameSelectField } from "./select-field";
 import {
   CardAction,
-  CardFieldPos,
+  CardActionBundle,
   CardInfo,
   CardPosition,
+  DialogConfigActionMany,
   DialogConfigCards,
   DialogConfigChain,
   DialogConfigEffectYesNo,
@@ -79,7 +86,6 @@ import { SelectableCard } from "./ui/selectable-card";
 import {
   degToRad,
   fieldRotation,
-  getFieldSlotPosition,
   useComputeCardPosition,
   useHandOffset,
 } from "./utils/position";
@@ -99,23 +105,119 @@ extend({
 
 export function Game() {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>;
-  const allCards = useAllCards();
 
-  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
-  const selectField = useGameStore((s) => s.selectField);
-  const idle = useGameStore((s) => s.events.length === 0);
+  const cardMotionValuesRef = useRef<Map<string, CardMotionValues>>(null!);
+  cardMotionValuesRef.current ??= new Map();
 
   useEffect(() => {
-    setSelectedCard(null);
-  }, [idle]);
+    const unsub = useGameStore.subscribe((state, prevState) => {
+      const idle = state.events.length === 0;
+      const prevIdle = prevState.events.length === 0;
+      if (idle !== prevIdle) {
+        gs().setSelectedCard(null);
+      }
+    });
 
-  const onRightClick = useEventCallback(() => {
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  const onRightClick = useRightClickCancel();
+
+  return (
+    <>
+      <GameInitializer />
+      <CardAnimations cardMotionValuesRef={cardMotionValuesRef} />
+      <GameWrapper
+        ref={wrapperRef}
+        onContextMenu={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          onRightClick();
+        }}
+      >
+        <RenderDialog />
+        <HtmlTurnState />
+        <Canvas shadows dpr={[1, 2]}>
+          <Suspense>
+            <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
+            <group position={[0, 1, -0.268]}>
+              <Model
+                position={[4, 0, 3.626]}
+                scale={[20, 20, 20]}
+                rotation={[(90 - fieldRotation) * degToRad, 0, 0.005]}
+              />
+            </group>
+            <group
+              onClick={() => {
+                gs().setSelectedCard(null);
+              }}
+              onPointerMissed={(e) => {
+                gs().setSelectedCard(null);
+                e.preventDefault();
+                if (e.button === 2) {
+                  onRightClick();
+                }
+              }}
+              onContextMenu={(e) => {
+                e.stopPropagation();
+                e.nativeEvent.preventDefault();
+                onRightClick();
+              }}
+            >
+              <hemisphereLight
+                // castShadow
+                intensity={4}
+                color="#fff"
+                groundColor="#777"
+              />
+              <GameCards
+                wrapperRef={wrapperRef}
+                cardMotionValuesRef={cardMotionValuesRef}
+              />
+              <GameSelectField />
+            </group>
+            {/* <Effects /> */}
+          </Suspense>
+        </Canvas>
+      </GameWrapper>
+      <DebugMenu />
+    </>
+  );
+}
+
+interface GameCardsProps {
+  wrapperRef: Ref<HTMLDivElement>;
+  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+}
+
+function GameCards({ wrapperRef, cardMotionValuesRef }: GameCardsProps) {
+  const allCards = useAllCards();
+
+  return (
+    <>
+      {allCards.map((card) => (
+        <RenderCard
+          wrapperRef={wrapperRef}
+          key={card.id}
+          card={card}
+          cardMotionValuesRef={cardMotionValuesRef}
+        />
+      ))}
+    </>
+  );
+}
+
+function useRightClickCancel() {
+  return useCallback(() => {
+    const idle = gs().events.length === 0;
+
     if (!idle) {
       return;
     }
 
-    const dialog = useGameStore.getState().dialog;
+    const dialog = gs().dialog;
     if (dialog) {
       switch (dialog.type) {
         case "yesno":
@@ -143,87 +245,40 @@ export function Game() {
             });
             runSimulatorStep();
           }
+          break;
+        case "actionMany":
+          gs().closeDialog();
+          break;
       }
     }
+  }, []);
+}
 
-    // const cancelAction = actions.find((c) => c.kind === "continue");
-    // if (cancelAction) {
-    //   console.log("continue");
-    //   sendResponse(cancelAction.response);
-    //   runSimulatorStep();
-    // }
-  });
-
+export function Model(props: ThreeElements["group"]) {
+  const { nodes, materials } = useGLTF("/models/table/scene.gltf");
   return (
-    <>
-      <GameInitializer />
-      <GameWrapper
-        ref={wrapperRef}
-        onContextMenu={(e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          onRightClick();
-        }}
+    <group {...props} dispose={null}>
+      <group
+        position={[-0.192, -0.984, 0]}
+        rotation={[Math.PI / 2, -0.005, -Math.PI]}
+        scale={0.01}
       >
-        <RenderDialog />
-        <HtmlTurnState />
-        <MotionCanvas
-          shadows
-          dpr={[1, 2]}
-          resize={{ scroll: true, offsetSize: false }}
-        >
-          <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
-          <group
-            onClick={() => setSelectedCard(null)}
-            onPointerMissed={(e) => {
-              console.log("pointer miss", e.button);
-              setSelectedCard(null);
-              e.preventDefault();
-              if (e.button === 2) {
-                onRightClick();
-              }
-            }}
-            onContextMenu={(e) => {
-              e.stopPropagation();
-              e.nativeEvent.preventDefault();
-              onRightClick();
-            }}
-          >
-            <mesh
-              position={[0, 0, 0]}
-              rotation={[-fieldRotation * degToRad, 0, 0]}
-            >
-              <meshStandardMaterial color="#fff" />
-              <planeGeometry args={[30, 20, 1]} />
-            </mesh>
-            <hemisphereLight
-              // castShadow
-              intensity={2}
-              color="#fff"
-              groundColor="#777"
-            />
-            {allCards.map((card) => (
-              <RenderCard wrapperRef={wrapperRef} key={card.id} card={card} />
-            ))}
-            {selectField && (
-              <RenderSelectField
-                positions={selectField.positions}
-                count={selectField.count}
-              />
-            )}
-          </group>
-          <Effects />
-          {/* <EffectComposer multisampling={0} enableNormalPass>
-            <N8AO />
-            <SMAA />
-            <Bloom />
-          </EffectComposer> */}
-        </MotionCanvas>
-      </GameWrapper>
-      <DebugMenu />
-    </>
+        <group rotation={[-Math.PI, 0, 0]}>
+          <mesh
+            castShadow
+            receiveShadow
+            geometry={(nodes["Desk_LP_01_-_Default_0"] as any).geometry}
+            material={materials["01_-_Default"]}
+            position={[-79.353, 0, 51.852]}
+            rotation={[-Math.PI / 2, Math.PI / 2, 0]}
+          />
+        </group>
+      </group>
+    </group>
   );
 }
+
+useGLTF.preload("/models/table/scene.gltf");
 
 function GameInitializer({}: {}) {
   use(load);
@@ -270,7 +325,7 @@ function HtmlTurnState({}: {}) {
             className="absolute z-10 inset-0 flex items-center justify-center"
           >
             <htmlMotion.div
-              className="relative text-[10cqh] font-bold"
+              className="relative text-[10cqh] text-white font-bold"
               initial="initial"
               animate="enter"
               exit="exit"
@@ -300,96 +355,15 @@ function HtmlTurnState({}: {}) {
   );
 }
 
-type RenderSelectFieldProps = {
-  positions: CardFieldPos[];
-  count: number;
-};
-
-function RenderSelectField({ positions, count }: RenderSelectFieldProps) {
-  const [selected, setSelected] = useState(() => new Set<number>());
-
-  const onConfirm = (set: Set<number>) => {
-    const places = Array.from(set.values(), (index) =>
-      convertGameLocation({ ...positions[index], overlay: null }),
-    );
-    sendResponse({
-      type: OcgResponseType.SELECT_PLACE,
-      places: places.map(({ controller, location, sequence }) => ({
-        player: controller,
-        location,
-        sequence,
-      })),
-    });
-    runSimulatorStep();
-  };
-
-  // TODO: implement partial selection and finish
-
-  return (
-    <Suspense>
-      {positions.map((pos, index) => (
-        <RenderSelectFieldSlot
-          key={index}
-          pos={pos}
-          selected={selected.has(index)}
-          onSelect={() => {
-            const newSelected = new Set(selected.values());
-            if (newSelected.has(index)) {
-              newSelected.delete(index);
-            } else {
-              newSelected.add(index);
-            }
-
-            if (count === 1 && newSelected.size === 1) {
-              onConfirm(newSelected);
-            } else {
-              setSelected(newSelected);
-            }
-          }}
-        />
-      ))}
-    </Suspense>
-  );
-}
-
-type RenderSelectFieldSlotProps = {
-  pos: CardFieldPos;
-  selected: boolean;
-  onSelect: () => void;
-};
-
-function RenderSelectFieldSlot({
-  pos,
-  selected,
-  onSelect,
-}: RenderSelectFieldSlotProps) {
-  const slotTexture = useTexture(textureSlot);
-
-  const [hover, setHover] = useState(false);
-
-  const [posX, posY, posZ] = getFieldSlotPosition(pos);
-
-  return (
-    <motion.mesh
-      position={[posX, posY, posZ]}
-      rotation={[-15 * degToRad, 0, 0]}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-      onClick={() => onSelect()}
-    >
-      <motion.meshStandardMaterial
-        map={slotTexture}
-        transparent
-        animate={{ color: hover ? "#3333ff" : "#aaaaff" }}
-        transition={{ type: "spring", bounce: 0, duration: 0.2 }}
-      />
-      <planeGeometry args={[cardScale, cardScale, 1]} />
-    </motion.mesh>
-  );
-}
-
 function Effects() {
-  return null;
+  return (
+    <EffectComposer multisampling={0} enableNormalPass>
+      <N8AO intensity={1} distanceFalloff={1} />
+      <SMAA />
+      <Bloom />
+      <Vignette />
+    </EffectComposer>
+  );
 }
 
 function RenderDialog() {
@@ -418,6 +392,9 @@ function RenderDialog() {
             {dialog.type === "chain" && <DialogSelectChain dialog={dialog} />}
             {dialog.type === "position" && (
               <DialogSelectPosition dialog={dialog} />
+            )}
+            {dialog.type === "actionMany" && (
+              <DialogSelectActionMany dialog={dialog} />
             )}
           </div>
         </htmlMotion.div>
@@ -451,7 +428,7 @@ function DialogSelectPosition({
                   className={cn(
                     "h-[8cqw] opacity-75",
                     selected === pos && "opacity-100",
-                    def && "rotate-90",
+                    def && "-rotate-90",
                   )}
                   src={faceup ? textureCardFront(code) : textureCardBack}
                   alt=""
@@ -553,6 +530,56 @@ function DialogSelectChain({
   );
 }
 
+type DialogSelectActionManyProps = {
+  dialog: DialogConfigActionMany;
+};
+
+function DialogSelectActionMany({
+  dialog: { actions },
+}: DialogSelectActionManyProps) {
+  const [selected, setSelected] = useState<null | number>(null);
+
+  return (
+    <>
+      <div className="w-[30cqw] flex overflow-x-auto justify-center">
+        <div className="flex items-center justify-start gap-[1cqw] py-[1cqw]">
+          {actions.map((c, i) => (
+            <SelectableCard
+              key={i}
+              code={c.card!.code}
+              selected={selected === i}
+              onSelect={() => setSelected(i)}
+              onUnselect={() => setSelected(null)}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center justify-center gap-[2cqw] mt-[1cqw]">
+        <Button
+          onClick={() => {
+            gs().closeDialog();
+            gs().setSelectedCard(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={() => {
+            if (selected === null) {
+              return;
+            }
+            sendResponse(actions[selected].response);
+            runSimulatorStep();
+          }}
+          aria-disabled={selected === null}
+        >
+          Select
+        </Button>
+      </div>
+    </>
+  );
+}
+
 type DialogSelectCardProps = {
   dialog: DialogConfigCards;
 };
@@ -648,64 +675,81 @@ function DialogSelectYesNo({ dialog: { type } }: DialogSelectYesNoProps) {
   );
 }
 
-interface RenderCardProps {
-  card: CardInfo;
-  wrapperRef: Ref<HTMLDivElement>;
-}
-
-function RenderCard({ card, wrapperRef }: RenderCardProps) {
-  let {
-    pos: { location, sequence },
-  } = card;
-
-  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
-
-  const { mHandOffsetY, mHandOffsetZ, mHandScale, updateHover } =
-    useHandOffset(card);
-
-  const [[mPosX, mPosY, mPosZ], [mRotX, mRotY, mRotZ]] =
-    useComputeCardPosition(card);
-
-  const currentEvent = useGameStore((s) => s.events.at(0));
-
-  useEffect(() => {
-    if (!currentEvent) {
-      return;
-    }
-    const { event, nextState } = currentEvent;
-    const ctx = {
+function updateCardMotionValues(
+  map: Map<string, CardMotionValues>,
+  id: string,
+  mHandOffsetY: MotionValue<number>,
+  mHandOffsetZ: MotionValue<number>,
+  mHandScale: MotionValue<number>,
+  mPosX: MotionValue<number>,
+  mPosY: MotionValue<number>,
+  mPosZ: MotionValue<number>,
+  mRotX: MotionValue<number>,
+  mRotY: MotionValue<number>,
+  mRotZ: MotionValue<number>,
+) {
+  const c = map.get(id);
+  if (!c) {
+    map.set(id, {
+      hpy: mHandOffsetY,
+      hpz: mHandOffsetZ,
+      hs: mHandScale,
       px: mPosX,
       py: mPosY,
       pz: mPosZ,
       rx: mRotX,
       ry: mRotY,
       rz: mRotZ,
-      hpy: mHandOffsetY,
-      hpz: mHandOffsetZ,
-      hs: mHandScale,
-    };
+    });
+    return;
+  }
+  c.hpy = mHandOffsetY;
+  c.hpz = mHandOffsetZ;
+  c.hs = mHandScale;
+  c.px = mPosX;
+  c.py = mPosY;
+  c.pz = mPosZ;
+  c.rx = mRotX;
+  c.ry = mRotY;
+  c.rz = mRotZ;
+}
 
-    const cleanup: (() => void)[] = [];
-    const addCleanup = (c: AnimationCleanup) => c && cleanup.push(c);
+interface RenderCardProps {
+  card: CardInfo;
+  wrapperRef: Ref<HTMLDivElement>;
+  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+}
 
-    switch (event.type) {
-      case "move":
-        addCleanup(animateMove(event, nextState, card, ctx));
-        addCleanup(animateHandSizeChange(event, nextState, card, ctx));
-        break;
-      case "draw":
-        addCleanup(animateDrawTarget(event, nextState, card, ctx));
-        addCleanup(animateHandSizeChange(event, nextState, card, ctx));
-        break;
-      case "shuffle":
-        addCleanup(animateShuffle(event, nextState, card, ctx));
-        break;
-    }
+function RenderCard({
+  card,
+  wrapperRef,
+  cardMotionValuesRef,
+}: RenderCardProps) {
+  let {
+    pos: { location, sequence },
+  } = card;
 
-    if (cleanup.length > 0) {
-      return () => cleanup.forEach((c) => c());
-    }
-  }, [currentEvent?.id]);
+  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
+
+  const { mHandOffsetY, mHandOffsetZ, mHandScale, hover, updateHover } =
+    useHandOffset(card);
+
+  const [[mPosX, mPosY, mPosZ], [mRotX, mRotY, mRotZ]] =
+    useComputeCardPosition(card);
+
+  updateCardMotionValues(
+    cardMotionValuesRef.current,
+    card.id,
+    mHandOffsetY,
+    mHandOffsetZ,
+    mHandScale,
+    mPosX,
+    mPosY,
+    mPosZ,
+    mRotX,
+    mRotY,
+    mRotZ,
+  );
 
   const x = useTransform<number, number>([mPosX], ([x1]) => x1);
   const y = useTransform<number, number>(
@@ -723,19 +767,27 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
 
   const bindClick =
     location === "hand" || !isPileLocation(location) || sequence === 0;
-  const bindHover = location === "hand";
+  const bindHover =
+    location === "hand" || !isPileLocation(location) || sequence === 0;
 
   const onPointerOver = useEventCallback((e: ThreeEvent<PointerEvent>) => {
     updateHover(true);
     e.stopPropagation();
   });
+
   const onPointerOut = useEventCallback(() => {
     updateHover(false);
   });
+
   const onClick = useEventCallback((e: ThreeEvent<MouseEvent>) => {
     setSelectedCard(card.pos);
     e.stopPropagation();
   });
+
+  const shouldShowActions =
+    isDirectInteractionLocation(location) ||
+    (location === "deck" && sequence === 0) ||
+    (location === "extra" && sequence === 0);
 
   return (
     <motion.object3D
@@ -750,16 +802,18 @@ function RenderCard({ card, wrapperRef }: RenderCardProps) {
     >
       <RenderCardFront
         code={card.code}
+        hover={hover}
         onPointerOver={bindHover ? onPointerOver : undefined}
         onPointerOut={bindHover ? onPointerOut : undefined}
         onClick={bindClick ? onClick : undefined}
       />
       <RenderCardBack
+        hover={hover}
         onPointerOver={bindHover ? onPointerOver : undefined}
         onPointerOut={bindHover ? onPointerOut : undefined}
         onClick={bindClick ? onClick : undefined}
       />
-      {isDirectInteractionLocation(location) && (
+      {shouldShowActions && (
         <RenderCardActions card={card} wrapperRef={wrapperRef} />
       )}
     </motion.object3D>
@@ -784,19 +838,34 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
     idle && selectedCard && isCardPosEqual(card.pos, selectedCard);
 
   const matchingActions = useMemo(() => {
-    return actions.filter(({ pos }) => {
-      if (pos?.controller !== controller) {
-        return false;
-      }
-      if (
-        location === pos.location &&
-        pos.location !== "hand" &&
-        isPileLocation(pos.location)
-      ) {
-        return sequence === 0; // only show for the first card of the pile
-      }
-      return pos.location === location && pos.sequence === sequence;
-    });
+    if (location === "hand" || !isPileLocation(location)) {
+      return actions.filter(
+        ({ card }) =>
+          card?.pos.controller === controller &&
+          card?.pos.location === location &&
+          card?.pos.sequence === sequence,
+      );
+    }
+    // for deck and extra deck
+    if (sequence === 0) {
+      return R.pipe(
+        actions,
+        R.filter(
+          ({ card }) =>
+            card?.pos.controller === controller &&
+            card?.pos.location === location,
+        ),
+        R.groupBy(({ kind }) => kind),
+        R.values(),
+        R.map(
+          (actions): CardActionBundle => ({
+            kind: `many_${actions[0].kind}` as const,
+            actions: actions as any,
+          }),
+        ),
+      );
+    }
+    return [];
   }, [actions, location, controller, sequence]);
 
   return (
@@ -814,7 +883,16 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
                   className="px-[1cqw] hover:bg-gray-700 cursor-pointer"
                   key={i}
                   onClick={() => {
-                    if (c.response) {
+                    if ("actions" in c) {
+                      gs().setSelectedCard(null);
+                      gs().openDialog({
+                        id: crypto.randomUUID(),
+                        player: gs().turnPlayer,
+                        title: `Select action ${c.actions[0].kind}`,
+                        type: "actionMany",
+                        actions: c.actions,
+                      });
+                    } else if ("response" in c && c.response) {
                       sendResponse(c.response);
                       runSimulatorStep();
                     }
@@ -837,52 +915,68 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
 const cardScale = 2.5;
 
 interface RenderCardFrontProps extends ComponentProps<"mesh"> {
+  hover?: boolean;
   code: number;
 }
 
-const RenderCardFront = memo(({ code, ...props }: RenderCardFrontProps) => {
-  return (
-    <mesh {...props}>
-      {code > 0 ? (
-        <Suspense
-          fallback={
-            <meshStandardMaterial
-              color={Color.NAMES.grey}
-              metalness={0}
-              roughness={0.5}
-            />
-          }
-        >
-          <CardTextureMaterial code={code} />
-        </Suspense>
-      ) : (
-        <meshStandardMaterial
-          color={Color.NAMES.grey}
-          metalness={0}
-          roughness={0.5}
-        />
-      )}
-      <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
-    </mesh>
-  );
-});
+const RenderCardFront = memo(
+  ({ hover, code, ...props }: RenderCardFrontProps) => {
+    return (
+      <mesh {...props}>
+        {code > 0 ? (
+          <Suspense
+            fallback={
+              <meshStandardMaterial
+                color={Color.NAMES.grey}
+                metalness={0}
+                roughness={0.5}
+              />
+            }
+          >
+            <CardTextureMaterial hover={hover} code={code} />
+          </Suspense>
+        ) : (
+          <meshStandardMaterial
+            color={Color.NAMES.grey}
+            metalness={0}
+            roughness={0.5}
+          />
+        )}
+        <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
+      </mesh>
+    );
+  },
+);
 
 RenderCardFront.displayName = "RenderCardFront";
 
 type CardTextureMaterialProps = {
+  hover?: boolean;
   code: number;
 };
 
-const CardTextureMaterial = memo(({ code }: CardTextureMaterialProps) => {
-  const frontTexture = useTexture(textureCardFront(code));
-  return <meshStandardMaterial map={frontTexture} />;
-});
+const CardTextureMaterial = memo(
+  ({ hover, code }: CardTextureMaterialProps) => {
+    const frontTexture = useTexture(textureCardFront(code));
+    return (
+      <motion.meshStandardMaterial
+        map={frontTexture}
+        emissive={0xffffff}
+        initial={{ emissiveIntensity: 0 } as any}
+        animate={{ emissiveIntensity: hover ? 0.03 : 0 } as any}
+        transition={{ duration: 0.1 }}
+      />
+    );
+  },
+);
 
 CardTextureMaterial.displayName = "CardTextureMaterial";
 
-interface RenderCardBackProps extends ComponentProps<"mesh"> {}
+interface RenderCardBackProps extends ComponentProps<"mesh"> {
+  hover?: boolean;
+}
 
-const RenderCardBack = memo(({ ...props }: RenderCardBackProps) => {
+const RenderCardBack = memo(({ hover, ...props }: RenderCardBackProps) => {
   return (
     <mesh rotation={[0, 180 * degToRad, 0]} {...props}>
       <Suspense
@@ -894,7 +988,7 @@ const RenderCardBack = memo(({ ...props }: RenderCardBackProps) => {
           />
         }
       >
-        <CardBackMaterial />
+        <CardBackMaterial hover={hover} />
       </Suspense>
       <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
     </mesh>
@@ -903,22 +997,38 @@ const RenderCardBack = memo(({ ...props }: RenderCardBackProps) => {
 
 RenderCardBack.displayName = "RenderCardBack";
 
-const CardBackMaterial = memo(() => {
+interface CardBackMaterialProps {
+  hover?: boolean;
+}
+
+const CardBackMaterial = memo(({ hover }: CardBackMaterialProps) => {
   const backTexture = useTexture(textureCardBack);
   return (
-    <meshStandardMaterial map={backTexture} metalness={0} roughness={0.5} />
+    <motion.meshStandardMaterial
+      map={backTexture}
+      metalness={0}
+      roughness={0.5}
+      emissive={0xffffff}
+      initial={{ emissiveIntensity: 0 } as any}
+      animate={{ emissiveIntensity: hover ? 0.03 : 0 } as any}
+      transition={{ duration: 0.1 }}
+    />
   );
 });
 
 type RenderCardOverlayProps = {
-  actions: CardAction[];
+  actions: (CardAction | CardActionBundle)[];
 };
 
 function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
   const idle = useGameStore((s) => s.events.length === 0);
   const hasActivateOrSS = useMemo(() => {
     return actions.some(
-      (a) => a.kind === "activate" || a.kind === "specialSummon",
+      (a) =>
+        a.kind === "activate" ||
+        a.kind === "specialSummon" ||
+        a.kind === "many_activate" ||
+        a.kind === "many_specialSummon",
     );
   }, [actions]);
 
@@ -947,6 +1057,8 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
         <meshStandardMaterial
           color={color}
           alphaMap={overlayTexture}
+          depthWrite={false}
+          opacity={0.7}
           transparent
         />
         <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
@@ -967,6 +1079,7 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
         <meshStandardMaterial
           color={color}
           alphaMap={overlayTexture}
+          depthWrite={false}
           transparent
         />
         <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />

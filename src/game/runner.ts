@@ -38,6 +38,7 @@ import {
   reorderHand,
   useGameStore,
 } from "./state";
+import { textureCardFront } from "./textures";
 
 let ocg: OcgCoreSync | null = null;
 const libPromise = initializeCore();
@@ -501,7 +502,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_ACTIVATE,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         for (const [index, action] of m.summons.entries()) {
@@ -512,7 +516,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_SUMMON,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         for (const [index, action] of m.special_summons.entries()) {
@@ -523,7 +530,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_SPECIAL_SUMMON,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         for (const [index, action] of m.monster_sets.entries()) {
@@ -534,7 +544,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_MONSTER_SET,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         for (const [index, action] of m.spell_sets.entries()) {
@@ -545,7 +558,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_SPELL_SET,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         for (const [index, action] of m.pos_changes.entries()) {
@@ -556,7 +572,10 @@ export function runSimulatorStep() {
               action: SelectIdleCMDAction.SELECT_POS_CHANGE,
               index,
             },
-            pos: convertLocation(action)!,
+            card: {
+              ...getCardInPos(egs(), convertLocation(action)!)!,
+              code: action.code,
+            },
           });
         }
         gs().setActions(actions);
@@ -570,12 +589,12 @@ export function runSimulatorStep() {
 
         const card = getCardInPos(egs(), source)!;
         const nextState = moveCard(egs(), { ...card, code, position }, dest);
+        const nextCard = getCardInPos(nextState, dest)!;
         gs().queueEvent({
           event: {
             type: "move",
-            code,
-            source,
-            dest,
+            card,
+            nextCard,
           },
           nextState,
         });
@@ -813,13 +832,7 @@ export function runSimulatorStep() {
 }
 
 function preloadTexture(code: number) {
-  useTexture.preload(
-    getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`),
-  );
-}
-
-function getProxiedUrl(url: string) {
-  return `/api/proxy/${encodeURIComponent(url)}`;
+  useTexture.preload(textureCardFront(code));
 }
 
 function sprintf(f: string, ...args: string[]): string {

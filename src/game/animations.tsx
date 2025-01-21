@@ -1,23 +1,73 @@
 import { animate, AnimationSequence, MotionValue } from "framer-motion";
+import { RefObject, useEffect } from "react";
 import { gs } from "./runner";
 import {
-  CardInfo,
   EventfulGameState,
-  getCardWithId,
-  isCardPosEqual,
   isFieldNotPileLocation,
+  useGameStore,
 } from "./state";
-import {
-  DuelEvent,
-  DuelEventDraw,
-  DuelEventMove,
-  DuelEventShuffle,
-} from "./state/event";
-import { getCardPosition, getPlayerSizes } from "./utils/position";
+import { DuelEventMove } from "./state/event";
+import { getCardPositionObj, getPlayerSizes } from "./utils/position";
 
-export type AnimationCleanup = (() => void) | undefined | void;
+export interface CardAnimationsProps {
+  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+}
 
-interface AnimationMotionContext {
+export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
+  const currentEvent = useGameStore((s) => s.events.at(0));
+
+  useEffect(() => {
+    if (!currentEvent) {
+      return;
+    }
+
+    const { event, nextState } = currentEvent;
+    console.log("animating", currentEvent.id, event);
+
+    const context: AnimationContext = {
+      sequence: [],
+      cardMVs: cardMotionValuesRef.current,
+      currentState: gs(),
+      nextState: nextState,
+    };
+
+    switch (event.type) {
+      case "move": {
+        const from = event.card.pos;
+        const to = event.nextCard.pos;
+        animateMove(event, context);
+        if (from.location === "hand" || to.location === "hand") {
+          animateReorderHand(from.controller, context);
+        }
+        break;
+      }
+      case "draw": {
+        if (event.player1.length > 0) {
+          animatePlayerDraws(0, event.player1.length, context);
+        }
+        if (event.player2.length > 0) {
+          animatePlayerDraws(1, event.player2.length, context);
+        }
+        break;
+      }
+      case "shuffle": {
+        animateReorderHand(event.player, context);
+        break;
+      }
+      default:
+        return;
+    }
+
+    const animation = animate(context.sequence);
+    const onCompleted = () => setTimeout(() => gs().nextEvent(), 200);
+    animation.then(onCompleted, onCompleted);
+    return () => animation.cancel();
+  }, [currentEvent?.id]);
+
+  return <></>;
+}
+
+export interface CardMotionValues {
   px: MotionValue<number>;
   py: MotionValue<number>;
   pz: MotionValue<number>;
@@ -29,193 +79,125 @@ interface AnimationMotionContext {
   hs: MotionValue<number>;
 }
 
-type Animation<T extends DuelEvent> = (
-  event: T,
-  nextState: EventfulGameState,
-  card: CardInfo,
-  m: AnimationMotionContext,
-) => AnimationCleanup;
-
-export const animateMove: Animation<DuelEventMove> = (
-  event,
-  nextState,
-  card,
-  m,
-) => {
-  if (!isCardPosEqual(card.pos, event.source)) {
-    return;
-  }
-
-  const newCard = getCardWithId(nextState, card.id) ?? card;
-  const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-    newCard,
-    getPlayerSizes(nextState.players[newCard.pos.controller]),
-  );
-
-  const speed = 0.5;
-  const seq: AnimationSequence = [];
-
-  seq.push(
-    [m.px, posX, { duration: speed, at: 0 }],
-    [m.rx, rotX, { duration: speed, at: 0 }],
-    [m.ry, rotY, { duration: speed, at: 0 }],
-    [m.rz, rotZ, { duration: speed, at: 0 }],
-  );
-
-  if (
-    !isFieldNotPileLocation(card.pos.location) &&
-    isFieldNotPileLocation(newCard.pos.location)
-  ) {
-    seq.push(
-      [m.py, posY + 1, { duration: speed, at: 0 }],
-      [m.pz, posZ + 1, { duration: speed, at: 0 }],
-      [m.py, posY, { duration: speed / 2, at: speed }],
-      [m.pz, posZ, { duration: speed / 2, at: speed }],
-    );
-  } else {
-    seq.push(
-      [m.py, posY, { duration: speed, at: 0 }],
-      [m.pz, posZ, { duration: speed, at: 0 }],
-    );
-  }
-
-  const animation = animate(seq);
-  const onCompleted = () => gs().nextEvent();
-  animation.then(onCompleted, onCompleted);
-
-  return () => animation.cancel();
-};
-
-export const animateDrawTarget: Animation<DuelEventDraw> = (
-  event,
-  nextState,
-  card,
-  m,
-) => {
-  if (card.pos.location !== "deck") {
-    return;
-  }
-
-  const {
-    pos: { controller, sequence },
-  } = card;
-  const draws = controller === 0 ? event.player1 : event.player2;
-
-  if (sequence >= draws.length) {
-    return;
-  }
-
-  const newCard = getCardWithId(nextState, card.id) ?? card;
-  const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-    newCard,
-    getPlayerSizes(nextState.players[newCard.pos.controller]),
-  );
-
-  const offset = sequence * 0.2;
-  const speed = 0.3;
-
-  const animation = animate([
-    [m.px, posX, { duration: speed, at: offset }],
-    [m.pz, posZ, { duration: speed, at: offset }],
-    [m.rx, rotX, { duration: speed, at: offset }],
-    [m.ry, rotY, { duration: speed, at: offset }],
-    [m.rz, rotZ, { duration: speed, at: offset }],
-    ...(controller === 0
-      ? ([
-          [m.py, posY + 3, { duration: speed, at: offset }],
-          [m.hs, 1.1, { duration: speed, at: offset }],
-          [m.py, posY, { duration: speed, at: offset + speed * 2 }],
-          [m.hs, 1, { duration: speed, at: offset + speed * 2 }],
-        ] as AnimationSequence)
-      : ([[m.py, posY, { duration: speed, at: offset }]] as AnimationSequence)),
-  ]);
-
-  if (
-    sequence === 0 &&
-    (controller === 0 || (controller === 1 && event.player1.length === 0))
-  ) {
-    const onCompleted = () => gs().nextEvent();
-    animation.then(onCompleted, onCompleted);
-  }
-
-  return () => animation.cancel();
-};
-
-const handsizeChangeEvents = ["draw", "move"] as const;
-function isHandSizeChangeEvent(
-  s: string,
-): s is (typeof handsizeChangeEvents)[number] {
-  return (handsizeChangeEvents as readonly string[]).includes(s);
+interface AnimationContext {
+  sequence: AnimationSequence;
+  currentState: EventfulGameState;
+  nextState: EventfulGameState;
+  cardMVs: Map<string, CardMotionValues>;
 }
 
-export const animateHandSizeChange: Animation<DuelEvent> = (
-  event,
-  nextState,
-  card,
-  m,
-) => {
-  if (!isHandSizeChangeEvent(event.type) || card.pos.location !== "hand") {
-    return;
-  }
+function animatePlayerDraws(
+  controller: 0 | 1,
+  draws: number,
+  c: AnimationContext,
+) {
+  const currentDeck = c.currentState.players[controller].field.deck;
+  const currentHand = c.currentState.players[controller].field.hand;
+  const nextHand = c.nextState.players[controller].field.hand;
+  const nextSizes = getPlayerSizes(c.nextState.players[controller]);
 
-  const newCard = getCardWithId(nextState, card.id) ?? card;
+  for (let i = 0; i < draws; i++) {
+    const card = currentDeck[i];
+    const nextCard = nextHand.find((c) => c.id === card.id)!;
+    const newPos = getCardPositionObj(nextCard, nextSizes);
+    const m = c.cardMVs.get(card.id)!;
+
+    const offset = i * 0.2;
+    const speed = 0.3;
+
+    if (controller === 0) {
+      c.sequence.push(
+        [m.hs, 1.1, { duration: speed, at: offset }],
+        [m.px, newPos.px, { duration: speed, at: offset }],
+        [m.py, newPos.py + 3, { duration: speed, at: offset }],
+        [m.pz, newPos.pz, { duration: speed, at: offset }],
+        [m.rx, newPos.rx, { duration: speed, at: offset }],
+        [m.ry, newPos.ry, { duration: speed, at: offset }],
+        [m.rz, newPos.rz, { duration: speed, at: offset }],
+
+        [m.hs, 1, { duration: speed, at: offset + speed * 2 }],
+        [m.py, newPos.py, { duration: speed, at: offset + speed * 2 }],
+      );
+    } else {
+      c.sequence.push(
+        [m.px, newPos.px, { duration: speed, at: offset }],
+        [m.py, newPos.py, { duration: speed, at: offset }],
+        [m.pz, newPos.pz, { duration: speed, at: offset }],
+        [m.rx, newPos.rx, { duration: speed, at: offset }],
+        [m.ry, newPos.ry, { duration: speed, at: offset }],
+        [m.rz, newPos.rz, { duration: speed, at: offset }],
+      );
+    }
+  }
+  for (let i = 0; i < currentHand.length; i++) {
+    const card = currentHand[i];
+    const nextCard = nextHand.find((c) => c.id === card.id)!;
+    const newPos = getCardPositionObj(nextCard, nextSizes);
+    const m = c.cardMVs.get(card.id)!;
+
+    const speed = 0.3;
+    c.sequence.push(
+      [m.px, newPos.px, { duration: speed, at: 0 }],
+      [m.py, newPos.py, { duration: speed, at: 0 }],
+      [m.pz, newPos.pz, { duration: speed, at: 0 }],
+      [m.rx, newPos.rx, { duration: speed, at: 0 }],
+      [m.ry, newPos.ry, { duration: speed, at: 0 }],
+      [m.rz, newPos.rz, { duration: speed, at: 0 }],
+    );
+  }
+}
+
+function animateReorderHand(controller: 0 | 1, c: AnimationContext) {
+  const nextHand = c.nextState.players[controller].field.hand;
+  const nextSizes = getPlayerSizes(c.nextState.players[controller]);
+
+  for (const card of nextHand) {
+    const nextCard = nextHand.find((c) => c.id === card.id)!;
+    const newPos = getCardPositionObj(nextCard, nextSizes);
+    const m = c.cardMVs.get(card.id)!;
+
+    const speed = 0.3;
+    c.sequence.push(
+      [m.px, newPos.px, { duration: speed, at: 0 }],
+      [m.py, newPos.py, { duration: speed, at: 0 }],
+      [m.pz, newPos.pz, { duration: speed, at: 0 }],
+      [m.rx, newPos.rx, { duration: speed, at: 0 }],
+      [m.ry, newPos.ry, { duration: speed, at: 0 }],
+      [m.rz, newPos.rz, { duration: speed, at: 0 }],
+    );
+  }
+}
+
+function animateMove(event: DuelEventMove, c: AnimationContext) {
+  const m = c.cardMVs.get(event.card.id)!;
+  const speed = 0.5;
+
+  const nextSizes = getPlayerSizes(
+    c.nextState.players[event.nextCard.pos.controller],
+  );
+  const newPos = getCardPositionObj(event.nextCard, nextSizes);
+
+  c.sequence.push(
+    [m.px, newPos.px, { duration: speed, at: 0 }],
+    [m.rx, newPos.rx, { duration: speed, at: 0 }],
+    [m.ry, newPos.ry, { duration: speed, at: 0 }],
+    [m.rz, newPos.rz, { duration: speed, at: 0 }],
+  );
+
   if (
-    newCard.pos.location !== "hand" ||
-    newCard.pos.controller !== card.pos.controller
+    !isFieldNotPileLocation(event.card.pos.location) &&
+    isFieldNotPileLocation(event.nextCard.pos.location)
   ) {
-    return;
+    c.sequence.push(
+      [m.py, newPos.py + 1, { duration: speed, at: 0 }],
+      [m.pz, newPos.pz + 1, { duration: speed, at: 0 }],
+      [m.py, newPos.py, { duration: speed / 2, at: speed }],
+      [m.pz, newPos.pz, { duration: speed / 2, at: speed }],
+    );
+  } else {
+    c.sequence.push(
+      [m.py, newPos.py, { duration: speed, at: 0 }],
+      [m.pz, newPos.pz, { duration: speed, at: 0 }],
+    );
   }
-
-  const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-    newCard,
-    getPlayerSizes(nextState.players[newCard.pos.controller]),
-  );
-  const animation = animate([
-    [m.px, posX, { duration: 0.2 }],
-    [m.py, posY, { duration: 0.2 }],
-    [m.pz, posZ, { duration: 0.2 }],
-    [m.rx, rotX, { duration: 0.2 }],
-    [m.ry, rotY, { duration: 0.2 }],
-    [m.rz, rotZ, { duration: 0.2 }],
-  ]);
-  return () => animation.cancel();
-};
-
-export const animateShuffle: Animation<DuelEventShuffle> = (
-  event,
-  nextState,
-  card,
-  m,
-) => {
-  const {
-    pos: { location, controller, sequence },
-  } = card;
-
-  if (location !== "hand" && controller !== event.player) {
-    return;
-  }
-
-  const newCard = getCardWithId(nextState, card.id) ?? card;
-
-  const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-    newCard,
-    getPlayerSizes(nextState.players[newCard.pos.controller]),
-  );
-
-  const animation = animate([
-    [m.px, posX, { duration: 0.2 }],
-    [m.py, posY, { duration: 0.2 }],
-    [m.pz, posZ, { duration: 0.2 }],
-    [m.rx, rotX, { duration: 0.2 }],
-    [m.ry, rotY, { duration: 0.2 }],
-    [m.rz, rotZ, { duration: 0.2 }],
-  ]);
-
-  // use the old first card to sequence
-  if (sequence === 0) {
-    const onCompleted = () => gs().nextEvent();
-    animation.then(onCompleted, onCompleted);
-  }
-
-  return () => animation.cancel();
-};
+}

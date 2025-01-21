@@ -1,4 +1,4 @@
-import { CardPos } from ".";
+import { CardInfo } from ".";
 
 export interface DuelEventStart {
   type: "start";
@@ -12,9 +12,8 @@ export interface DuelEventDraw {
 
 export interface DuelEventMove {
   type: "move";
-  code: number;
-  source: CardPos;
-  dest: CardPos;
+  card: CardInfo;
+  nextCard: CardInfo;
   reason?: "summon" | "spsummon";
 }
 
