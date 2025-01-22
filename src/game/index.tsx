@@ -1,3 +1,6 @@
+"use client";
+
+import { useAnimatedValue } from "@/lib/hooks/use-animated-value";
 import {
   Html,
   PerspectiveCamera,
@@ -14,12 +17,13 @@ import {
   Vignette,
 } from "@react-three/postprocessing";
 import {
+  animate,
   AnimatePresence,
   motion as htmlMotion,
   MotionValue,
+  useMotionValueEvent,
   useTransform,
 } from "framer-motion";
-import { motion } from "framer-motion-3d";
 import { OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
@@ -87,6 +91,7 @@ import {
   degToRad,
   fieldRotation,
   useComputeCardPosition,
+  useControllerSizes,
   useHandOffset,
 } from "./utils/position";
 
@@ -729,7 +734,10 @@ function RenderCard({
     pos: { location, sequence },
   } = card;
 
+  const ref = useRef<Object3D>(null);
+
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
+  const sizes = useControllerSizes(card.pos.controller);
 
   const { mHandOffsetY, mHandOffsetZ, mHandScale, hover, updateHover } =
     useHandOffset(card);
@@ -765,11 +773,6 @@ function RenderCard({
   const rotateZ = useTransform<number, number>([mRotZ], ([z1]) => z1);
   const scale = useTransform<number, number>([mHandScale], ([s1]) => s1);
 
-  const bindClick =
-    location === "hand" || !isPileLocation(location) || sequence === 0;
-  const bindHover =
-    location === "hand" || !isPileLocation(location) || sequence === 0;
-
   const onPointerOver = useEventCallback((e: ThreeEvent<PointerEvent>) => {
     updateHover(true);
     e.stopPropagation();
@@ -784,39 +787,77 @@ function RenderCard({
     e.stopPropagation();
   });
 
-  const shouldShowActions =
+  const isTopDeck = location === "deck" && sequence === 0;
+  const isTopExtra = location === "extra" && sequence === 0;
+  const isTopGrave = location === "grave" && sequence === sizes.grave - 1;
+  const isTopBanish = location === "banish" && sequence === sizes.grave - 1;
+
+  const isInteractive =
     isDirectInteractionLocation(location) ||
-    (location === "deck" && sequence === 0) ||
-    (location === "extra" && sequence === 0);
+    isTopDeck ||
+    isTopExtra ||
+    isTopGrave ||
+    isTopBanish;
+
+  useMotionValueEvent(x, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.position.x = v;
+  });
+  useMotionValueEvent(y, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.position.y = v;
+  });
+  useMotionValueEvent(z, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.position.z = v;
+  });
+  useMotionValueEvent(rotateX, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.rotation.x = v;
+  });
+  useMotionValueEvent(rotateY, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.rotation.y = v;
+  });
+  useMotionValueEvent(rotateZ, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.rotation.z = v;
+  });
+  useMotionValueEvent(scale, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.scale.x = v;
+    ref.current.scale.y = v;
+  });
 
   return (
-    <motion.object3D
-      position-x={x}
-      position-y={y}
-      position-z={z}
-      rotation-x={rotateX}
-      rotation-y={rotateY}
-      rotation-z={rotateZ}
-      scale-x={scale}
-      scale-y={scale}
+    <object3D
+      ref={ref}
+      position-x={x.get()}
+      position-y={y.get()}
+      position-z={z.get()}
+      rotation-x={rotateX.get()}
+      rotation-y={rotateY.get()}
+      rotation-z={rotateZ.get()}
+      scale-x={scale.get()}
+      scale-y={scale.get()}
     >
       <RenderCardFront
         code={card.code}
         hover={hover}
-        onPointerOver={bindHover ? onPointerOver : undefined}
-        onPointerOut={bindHover ? onPointerOut : undefined}
-        onClick={bindClick ? onClick : undefined}
+        onPointerOver={isInteractive ? onPointerOver : undefined}
+        onPointerOut={isInteractive ? onPointerOut : undefined}
+        onClick={isInteractive ? onClick : undefined}
       />
       <RenderCardBack
         hover={hover}
-        onPointerOver={bindHover ? onPointerOver : undefined}
-        onPointerOut={bindHover ? onPointerOut : undefined}
-        onClick={bindClick ? onClick : undefined}
+        onPointerOver={isInteractive ? onPointerOver : undefined}
+        onPointerOut={isInteractive ? onPointerOut : undefined}
+        onClick={isInteractive ? onClick : undefined}
       />
-      {shouldShowActions && (
+      {isInteractive && (
         <RenderCardActions card={card} wrapperRef={wrapperRef} />
       )}
-    </motion.object3D>
+    </object3D>
   );
 }
 
@@ -833,6 +874,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
   const actions = useGameStore((s) => s.actions);
   const selectedCard = useGameStore((s) => s.selectedCard);
   const idle = useGameStore((s) => s.events.length === 0);
+  const sizes = useControllerSizes(card.pos.controller);
 
   const selected =
     idle && selectedCard && isCardPosEqual(card.pos, selectedCard);
@@ -846,8 +888,13 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
           card?.pos.sequence === sequence,
       );
     }
-    // for deck and extra deck
-    if (sequence === 0) {
+
+    // for piles
+    const isTopDeck = location === "deck" && sequence === 0;
+    const isTopExtra = location === "extra" && sequence === 0;
+    const isTopGrave = location === "grave" && sequence === sizes.grave - 1;
+    const isTopBanish = location === "banish" && sequence === sizes.grave - 1;
+    if (isTopDeck || isTopExtra || isTopGrave || isTopBanish) {
       return R.pipe(
         actions,
         R.filter(
@@ -866,7 +913,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
       );
     }
     return [];
-  }, [actions, location, controller, sequence]);
+  }, [actions, location, controller, sequence, sizes]);
 
   return (
     <>
@@ -913,6 +960,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
 }
 
 const cardScale = 2.5;
+const cardRatio = 271 / 395;
 
 interface RenderCardFrontProps extends ComponentProps<"mesh"> {
   hover?: boolean;
@@ -942,7 +990,7 @@ const RenderCardFront = memo(
             roughness={0.5}
           />
         )}
-        <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
+        <planeGeometry args={[cardScale * cardRatio, cardScale, 1]} />
       </mesh>
     );
   },
@@ -957,14 +1005,25 @@ type CardTextureMaterialProps = {
 
 const CardTextureMaterial = memo(
   ({ hover, code }: CardTextureMaterialProps) => {
+    const ref = useRef<MeshStandardMaterial>(null);
     const frontTexture = useTexture(textureCardFront(code));
+
+    const emissiveIntensity = useAnimatedValue(hover ? 0.03 : 0, {
+      duration: 0.1,
+    });
+    useMotionValueEvent(emissiveIntensity, "change", (v) => {
+      if (!ref.current) return;
+      ref.current.emissiveIntensity = v;
+    });
+
     return (
-      <motion.meshStandardMaterial
+      <meshStandardMaterial
+        ref={ref}
         map={frontTexture}
+        metalness={0}
+        roughness={0.5}
         emissive={0xffffff}
-        initial={{ emissiveIntensity: 0 } as any}
-        animate={{ emissiveIntensity: hover ? 0.03 : 0 } as any}
-        transition={{ duration: 0.1 }}
+        emissiveIntensity={emissiveIntensity.get()}
       />
     );
   },
@@ -1002,16 +1061,25 @@ interface CardBackMaterialProps {
 }
 
 const CardBackMaterial = memo(({ hover }: CardBackMaterialProps) => {
+  const ref = useRef<MeshStandardMaterial>(null);
   const backTexture = useTexture(textureCardBack);
+
+  const emissiveIntensity = useAnimatedValue(hover ? 0.03 : 0, {
+    duration: 0.1,
+  });
+  useMotionValueEvent(emissiveIntensity, "change", (v) => {
+    if (!ref.current) return;
+    ref.current.emissiveIntensity = v;
+  });
+
   return (
-    <motion.meshStandardMaterial
+    <meshStandardMaterial
+      ref={ref}
       map={backTexture}
       metalness={0}
       roughness={0.5}
       emissive={0xffffff}
-      initial={{ emissiveIntensity: 0 } as any}
-      animate={{ emissiveIntensity: hover ? 0.03 : 0 } as any}
-      transition={{ duration: 0.1 }}
+      emissiveIntensity={emissiveIntensity.get()}
     />
   );
 });
@@ -1032,59 +1100,69 @@ function RenderCardOverlay({ actions }: RenderCardOverlayProps) {
     );
   }, [actions]);
 
-  const overlayTexture = useTexture(textureHighlight);
-
   if (actions.length === 0 || !idle) {
     return null;
   }
 
-  const color = hasActivateOrSS ? 0xfaf148 : 0x79a6d9;
-
   return (
     <>
-      <motion.mesh
-        position-z={-0.001}
-        transition={{
-          repeat: Infinity,
-          repeatType: "reverse",
-          duration: 0.5,
-          type: "tween",
-          ease: "easeInOut",
-        }}
-        initial={{ scale: 1, opacity: 0.2 }}
-        animate={{ scale: 1.02, opacity: 0.3 }}
-      >
-        <meshStandardMaterial
-          color={color}
-          alphaMap={overlayTexture}
-          depthWrite={false}
-          opacity={0.7}
-          transparent
-        />
-        <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
-      </motion.mesh>
-      <motion.mesh
-        rotation={[0, 180 * degToRad, 0]}
-        position-z={0.001}
-        transition={{
-          repeat: Infinity,
-          repeatType: "reverse",
-          duration: 0.5,
-          type: "tween",
-          ease: "easeInOut",
-        }}
-        initial={{ scale: 1, opacity: 0.2 }}
-        animate={{ scale: 1.02, opacity: 0.3 }}
-      >
-        <meshStandardMaterial
-          color={color}
-          alphaMap={overlayTexture}
-          depthWrite={false}
-          transparent
-        />
-        <planeGeometry args={[cardScale * 1.35, cardScale * 1.43, 1]} />
-      </motion.mesh>
+      <AnimatedCardActionsOverlay isGold={hasActivateOrSS} />
+      <AnimatedCardActionsOverlay isGold={hasActivateOrSS} isBack />
     </>
+  );
+}
+
+interface AnimatedCardActionsOverlayProps {
+  isGold?: boolean;
+  isBack?: boolean;
+}
+
+function AnimatedCardActionsOverlay({
+  isGold,
+  isBack,
+}: AnimatedCardActionsOverlayProps) {
+  const ref = useRef<Mesh>(null);
+  const refMaterial = useRef<MeshStandardMaterial>(null);
+
+  const overlayTexture = useTexture(textureHighlight);
+  const color = isGold ? 0xfaf148 : 0x79a6d9;
+
+  useEffect(() => {
+    if (!ref.current || !refMaterial.current) {
+      return;
+    }
+    animate(
+      [
+        [ref.current.scale, { x: [1, 1.005], y: [1, 1.005] }, { at: 0 }],
+        [refMaterial.current, { opacity: [0.8, 0.9] }, { at: 0 }],
+      ],
+      {
+        repeat: Infinity,
+        repeatType: "reverse",
+        duration: 0.5,
+        type: "keyframes",
+        ease: "easeInOut",
+      },
+    );
+  });
+
+  return (
+    <mesh
+      ref={ref}
+      rotation-y={isBack ? 180 * degToRad : 0}
+      position-z={isBack ? 0.001 : -0.001}
+      scale={1}
+    >
+      <meshStandardMaterial
+        ref={refMaterial}
+        color={color}
+        alphaMap={overlayTexture}
+        depthWrite={false}
+        opacity={0.8}
+        transparent
+      />
+      <planeGeometry args={[cardScale * 1.24, cardScale * 1.26, 1]} />
+    </mesh>
   );
 }
 

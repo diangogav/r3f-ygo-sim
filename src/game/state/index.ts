@@ -1,10 +1,11 @@
+import { Tuple } from "@/lib/type-utils";
 import { OcgMessage, OcgResponse } from "ocgcore-wasm";
 import * as R from "remeda";
 import { create } from "zustand";
 import { combine } from "zustand/middleware";
 import { DuelEvent } from "./event";
 
-export type GameState = {
+export interface GameState {
   players: [PlayerState, PlayerState];
   turn: number;
   turnPlayer: 0 | 1;
@@ -18,9 +19,9 @@ export type GameState = {
   debug: {
     ocgMessages: OcgMessage[];
   };
-};
+}
 
-export type EventfulGameState = Pick<
+export type EventGameState = Pick<
   GameState,
   "players" | "turn" | "turnPlayer" | "phase"
 >;
@@ -40,10 +41,10 @@ type GameStatePhases =
 export interface DuelEventEntry {
   id: string;
   event: DuelEvent;
-  nextState: EventfulGameState;
+  nextState: EventGameState;
 }
 
-export type CardAction = {
+export interface CardAction {
   kind:
     | "continue"
     | "activate"
@@ -54,7 +55,7 @@ export type CardAction = {
     | "changePos";
   card: CardInfo | null;
   response: OcgResponse;
-};
+}
 
 export type CardActionBundle = CardAction["kind"] extends infer T
   ? T extends CardAction["kind"]
@@ -62,13 +63,12 @@ export type CardActionBundle = CardAction["kind"] extends infer T
     : never
   : never;
 
-export type CardInfo = {
+export interface CardInfo {
   id: string;
   code: number;
   pos: CardPos;
-  status: "showing" | "placed";
   position: CardPosition;
-};
+}
 
 export type PartialCardInfo = Pick<CardInfo, "id"> &
   Partial<Omit<CardInfo, "id">>;
@@ -152,34 +152,24 @@ export type DialogConfig =
   | DialogConfigActionMany
   | DialogConfigPosition;
 
-export type PlayerState = {
+export interface PlayerState {
+  lp: number;
   field: {
     deck: CardInfo[];
     hand: CardInfo[];
     grave: CardInfo[];
     extra: CardInfo[];
     banish: CardInfo[];
-    extraMonsterZone: [CardInfo | null, CardInfo | null];
-    mainMonsterZone: [
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-    ];
-    spellZone: [
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-      CardInfo | null,
-    ];
+    extraMonsterZone: Tuple<CardInfo | null, 2>;
+    mainMonsterZone: Tuple<CardInfo | null, 5>;
+    spellZone: Tuple<CardInfo | null, 5>;
     fieldZone: CardInfo | null;
   };
-};
+}
 
 function createInitialPlayerState(): PlayerState {
   return {
+    lp: 0,
     field: {
       hand: [],
       deck: [],
@@ -252,7 +242,7 @@ export const useGameStore = create(
       nextEvent() {
         set((state) => ({
           ...R.pick(
-            state.events.at(0)?.nextState ?? ({} as Partial<EventfulGameState>),
+            state.events.at(0)?.nextState ?? ({} as Partial<EventGameState>),
             ["players", "turn", "turnPlayer", "phase"],
           ),
           events: state.events.slice(1),
@@ -279,7 +269,12 @@ export const useGameStore = create(
   ),
 );
 
-export function eventfulGS({ players, turn, turnPlayer, phase }: GameState) {
+export function extractEventGS({
+  players,
+  turn,
+  turnPlayer,
+  phase,
+}: GameState) {
   return { players, turn, turnPlayer, phase };
 }
 
@@ -324,7 +319,7 @@ export function reorderHand<State extends Pick<GameState, "players">>(
   };
 }
 
-function updateCards(state: EventfulGameState, cards: PartialCardInfo[]) {
+function updateCards(state: EventGameState, cards: PartialCardInfo[]) {
   const apply = <T extends CardInfo | null>(c: T) => {
     if (!c) {
       return c;
@@ -335,6 +330,7 @@ function updateCards(state: EventfulGameState, cards: PartialCardInfo[]) {
   return {
     ...state,
     players: R.map(state.players, (player) => ({
+      ...player,
       field: {
         deck: R.map(player.field.deck, apply),
         hand: R.map(player.field.hand, apply),
@@ -463,7 +459,7 @@ export function getCardWithId(state: Pick<GameState, "players">, id: string) {
 }
 
 export function getCardInPos(
-  state: EventfulGameState,
+  state: EventGameState,
   { controller, location, sequence }: CardPos,
 ) {
   const { field } = state.players[controller];

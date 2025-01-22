@@ -1,11 +1,7 @@
 import { animate, AnimationSequence, MotionValue } from "framer-motion";
 import { RefObject, useEffect } from "react";
 import { gs } from "./runner";
-import {
-  EventfulGameState,
-  isFieldNotPileLocation,
-  useGameStore,
-} from "./state";
+import { EventGameState, isFieldNotPileLocation, useGameStore } from "./state";
 import { DuelEventMove } from "./state/event";
 import { getCardPositionObj, getPlayerSizes } from "./utils/position";
 
@@ -81,8 +77,8 @@ export interface CardMotionValues {
 
 interface AnimationContext {
   sequence: AnimationSequence;
-  currentState: EventfulGameState;
-  nextState: EventfulGameState;
+  currentState: EventGameState;
+  nextState: EventGameState;
   cardMVs: Map<string, CardMotionValues>;
 }
 

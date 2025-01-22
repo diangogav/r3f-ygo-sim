@@ -1,3 +1,7 @@
+import {
+  LoadDeckResponse,
+  LoadDeckResponseCard,
+} from "@/app/api/loadDeck/route";
 import { useTexture } from "@react-three/drei";
 import createCore, {
   OcgCardLoc,
@@ -20,8 +24,6 @@ import createCore, {
   ocgMessageTypeStrings,
   ocgPositionParse,
 } from "ocgcore-wasm";
-import coreUrl from "ocgcore-wasm/lib/ocgcore.sync.wasm?url";
-import type { LoadDeckResponse, LoadDeckResponseCard } from "../handler";
 import { arrayShuffle } from "../lib/array-shuffle";
 import { xoshiro256ss } from "../lib/xoshiro256ss";
 import {
@@ -32,7 +34,7 @@ import {
   CardPosition,
   PartialCardInfo,
   cardPos,
-  eventfulGS,
+  extractEventGS,
   getCardInPos,
   moveCard,
   reorderHand,
@@ -40,6 +42,7 @@ import {
 } from "./state";
 import { textureCardFront } from "./textures";
 
+const coreUrl = new URL("ocgcore-wasm/lib/ocgcore.sync.wasm", import.meta.url);
 let ocg: OcgCoreSync | null = null;
 const libPromise = initializeCore();
 
@@ -58,7 +61,7 @@ export const loadedData = {
 
 export async function createGame(signal?: AbortSignal) {
   const [deckData] = await Promise.all([
-    fetch("/api/loadDeck", {
+    fetch(`/api/loadDeck`, {
       method: "post",
       body: JSON.stringify({
         player1: { deck: testDeck },
@@ -139,6 +142,7 @@ export async function createGame(signal?: AbortSignal) {
   useGameStore.setState({
     players: [
       {
+        lp: 8000,
         field: {
           deck: setupPile(
             0,
@@ -160,6 +164,7 @@ export async function createGame(signal?: AbortSignal) {
         },
       },
       {
+        lp: 8000,
         field: {
           deck: setupPile(
             1,
@@ -358,7 +363,7 @@ export function egs() {
   if (event) {
     return { ...event.nextState };
   }
-  return eventfulGS(gs());
+  return extractEventGS(gs());
 }
 
 export function gs() {
@@ -947,7 +952,6 @@ function setupPile(
         code: 0,
         id: crypto.randomUUID(),
         pos: { controller, location: loc, sequence: i, overlay: null },
-        status: "placed",
         position: "down_atk",
       }) satisfies CardInfo,
   );
@@ -957,7 +961,7 @@ async function initializeCore() {
   ocg = await createCore({
     locateFile(url, scriptDirectory) {
       if (url.endsWith(".wasm")) {
-        return coreUrl;
+        return coreUrl.toString();
       }
       return scriptDirectory + url;
     },
@@ -967,7 +971,8 @@ async function initializeCore() {
   console.log(`core initialized (v${maj}.${min})`);
 }
 
-const testDeck = `ydke://tjqcAboo9gE1NEsAzViuBKQDWAOyvQgASZnbAJxM2wHHmj8EOH1oBNG96ATxQEMCrEnLAnBgLwHx7vkEhJAHAfL9qgLFLs4EMHQKAdEhSQGmm/QBX/EEAigmIQJFpa8COUBYBMap2gTrAfsE7yX+BFINmQPOdFcDzBFIBE6DmARWPuoEjUogAIl3cQB6gEoCkFB1AwzjPQQDVa0FiTJ3BA==!urOuAYRE7ANHyAYF+feGBYFjZAU5hwwAGaKKAdENRgGxWQIFxfrlArsqYgSpHIYDkSbIAOsr/wJJkjQD!!`;
+const testDeck = `ydke://thw3ALYcNwC2HDcAcRtTAk/aVAAdUbwFbGahAWxmoQFsZqEBKnO4Ad+EuwDfhLsA34S7AFYrJgRWKyYEGB+iAhgfogJErfADRK3wA51tNwGaV4QFmleEBZpXhAU/DRoCfTpSAj8NGgI/DRoCfTpSAn06UgLfFXsC3xV7Am++MQSAqRQEVismBICpFATvghYA74IWAO+CFgDFqdoEWXtjBA==!tLYsAydapAEw9fkBzrvlAfDB9gKkmisAMqZvAeR3jAOzzOYF7WsVBcw7QQSfkGoA0htBAZa6cwHhhSIF!!`;
 
 export let gameInstance: OcgDuelHandle | null = null;
-export const gameInstancePromise = createGame();
+export const gameInstancePromise =
+  typeof window === "undefined" ? Promise.resolve(undefined!) : createGame();

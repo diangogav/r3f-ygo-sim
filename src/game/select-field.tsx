@@ -93,7 +93,7 @@ function RenderSelectFieldSlot({
   const [posX, posY, posZ] = getFieldSlotPosition(pos);
 
   return (
-    <motion.mesh
+    <mesh
       position={[posX, posY, posZ]}
       rotation={[-15 * degToRad, 0, 0]}
       onPointerEnter={() => setHover(true)}
@@ -117,7 +117,7 @@ function RenderSelectFieldSlot({
         />
       </Suspense>
       <planeGeometry args={[cardScale, cardScale, 1]} />
-    </motion.mesh>
+    </mesh>
   );
 }
 
