@@ -1,6 +1,6 @@
 "use client";
 
-import { useAnimatedValue } from "@/lib/hooks/use-animated-value";
+import { animated, easings, to, useSpring } from "@react-spring/three";
 import {
   Html,
   PerspectiveCamera,
@@ -9,21 +9,8 @@ import {
   useTexture,
 } from "@react-three/drei";
 import { Canvas, extend, ThreeElements, ThreeEvent } from "@react-three/fiber";
-import {
-  Bloom,
-  EffectComposer,
-  N8AO,
-  SMAA,
-  Vignette,
-} from "@react-three/postprocessing";
-import {
-  animate,
-  AnimatePresence,
-  motion as htmlMotion,
-  MotionValue,
-  useMotionValueEvent,
-  useTransform,
-} from "framer-motion";
+import { Bloom, EffectComposer, Vignette } from "@react-three/postprocessing";
+import { animate, AnimatePresence, motion } from "framer-motion";
 import { OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
@@ -53,9 +40,11 @@ import {
   PointLight,
 } from "three";
 import { useEventCallback } from "usehooks-ts";
+import { useShallow } from "zustand/react/shallow";
 import { cn } from "../lib/cn";
-import { CardAnimations, CardMotionValues } from "./animations";
+import { CardAnimationRef, CardAnimations } from "./animations";
 import {
+  egs,
   gameInstancePromise,
   gs,
   loadedData,
@@ -67,21 +56,27 @@ import {
   CardAction,
   CardActionBundle,
   CardInfo,
+  CardPos,
   CardPosition,
   DialogConfigActionMany,
   DialogConfigCards,
   DialogConfigChain,
   DialogConfigEffectYesNo,
   DialogConfigPosition,
+  DialogConfigSelectOption,
+  DialogConfigSelectUnselect,
   DialogConfigYesNo,
+  getCardInPos,
   isCardPosEqual,
   isDirectInteractionLocation,
   isPileLocation,
+  isPileTop,
   useGameStore,
 } from "./state";
 import {
   textureCardBack,
   textureCardFront,
+  textureChain,
   textureHighlight,
   textureSlot,
 } from "./textures";
@@ -90,6 +85,7 @@ import { SelectableCard } from "./ui/selectable-card";
 import {
   degToRad,
   fieldRotation,
+  getCardPositionObj,
   useComputeCardPosition,
   useControllerSizes,
   useHandOffset,
@@ -111,7 +107,7 @@ extend({
 export function Game() {
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  const cardMotionValuesRef = useRef<Map<string, CardMotionValues>>(null!);
+  const cardMotionValuesRef = useRef<Map<string, CardAnimationRef>>(null!);
   cardMotionValuesRef.current ??= new Map();
 
   useEffect(() => {
@@ -144,6 +140,7 @@ export function Game() {
       >
         <RenderDialog />
         <HtmlTurnState />
+        <OverlaySelectedCard />
         <Canvas shadows dpr={[1, 2]}>
           <Suspense>
             <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
@@ -181,9 +178,10 @@ export function Game() {
                 wrapperRef={wrapperRef}
                 cardMotionValuesRef={cardMotionValuesRef}
               />
+              <ChainLinkIndicators />
               <GameSelectField />
             </group>
-            {/* <Effects /> */}
+            <Effects />
           </Suspense>
         </Canvas>
       </GameWrapper>
@@ -192,9 +190,45 @@ export function Game() {
   );
 }
 
+interface OverlaySelectedCardProps {}
+
+function OverlaySelectedCard({}: OverlaySelectedCardProps) {
+  const selectedCard = useGameStore((s) =>
+    s.selectedCard ? getCardInPos(s, s.selectedCard) : null,
+  );
+
+  const cardInfo = useMemo(() => {
+    if (!selectedCard || selectedCard.code <= 0) {
+      return null;
+    }
+    return loadedData.cards.get(selectedCard.code) ?? null;
+  }, [selectedCard]);
+
+  return (
+    cardInfo && (
+      <div className="absolute top-[2cqw] h-[40cqw] left-[2cqw] w-[20cqw] z-20 bg-gray-800 text-white p-[1cqw] text-[1cqw] flex flex-col gap-[1cqw]">
+        <div className="overflow-hidden text-nowrap text-ellipsis flex-none">
+          {cardInfo.name}
+        </div>
+        <div className="flex gap-[1cqw] flex-none">
+          <img className="h-[13cqw]" src={textureCardFront(cardInfo.id)} />
+          <div className="flex flex-col gap-[0.1cqw]">
+            <div>Level {cardInfo.data.level}</div>
+            <div>ATK {cardInfo.data.attack}</div>
+            <div>DEF {cardInfo.data.defense}</div>
+          </div>
+        </div>
+        <div className="text-[0.8cqw] whitespace-pre-wrap overflow-y-auto flex-1">
+          {cardInfo.desc}
+        </div>
+      </div>
+    )
+  );
+}
+
 interface GameCardsProps {
   wrapperRef: Ref<HTMLDivElement>;
-  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+  cardMotionValuesRef: RefObject<Map<string, CardAnimationRef>>;
 }
 
 function GameCards({ wrapperRef, cardMotionValuesRef }: GameCardsProps) {
@@ -204,13 +238,136 @@ function GameCards({ wrapperRef, cardMotionValuesRef }: GameCardsProps) {
     <>
       {allCards.map((card) => (
         <RenderCard
-          wrapperRef={wrapperRef}
           key={card.id}
+          wrapperRef={wrapperRef}
           card={card}
           cardMotionValuesRef={cardMotionValuesRef}
         />
       ))}
     </>
+  );
+}
+
+function ChainLinkIndicators() {
+  const chains = useGameStore((s) => s.chain);
+  const currentEvent = useGameStore(
+    useShallow((s) => {
+      const event = s.events.at(0);
+      if (
+        event?.event.type === "chain" ||
+        event?.event.type === "chainSolved"
+      ) {
+        return { ...event, event: event.event };
+      }
+      return null;
+    }),
+  );
+
+  useEffect(() => {
+    if (!currentEvent) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      gs().nextEvent();
+    }, 200);
+    return () => clearTimeout(timeout);
+  }, [currentEvent?.id]);
+
+  return (
+    <>
+      {currentEvent && currentEvent.event.type === "chain" && (
+        <ChainLinkIndicator
+          key={currentEvent.event.link}
+          link={currentEvent.event.link}
+          trigger={currentEvent.event.trigger}
+        />
+      )}
+      {chains.map((chain) => (
+        <ChainLinkIndicator
+          key={chain.link}
+          link={chain.link}
+          trigger={chain.trigger}
+        />
+      ))}
+    </>
+  );
+}
+
+interface ChainLinkIndicatorProps {
+  link: number;
+  trigger: CardPos;
+}
+
+function ChainLinkIndicator({ trigger }: ChainLinkIndicatorProps) {
+  const sizes = useControllerSizes(trigger.controller);
+
+  const position = useMemo(() => {
+    return getCardPositionObj(
+      {
+        code: 0,
+        id: "",
+        pos: {
+          controller: trigger.controller,
+          location: trigger.location,
+          sequence: trigger.sequence,
+          overlay: null,
+        },
+        position: "up_atk",
+      },
+      sizes,
+    );
+  }, [trigger.controller, trigger.location, trigger.sequence, sizes]);
+
+  const springs = useSpring({
+    from: { rotation: 0 },
+    to: { rotation: -360 * degToRad },
+    loop: true,
+    config: { duration: 5000, easing: easings.linear },
+  });
+
+  return (
+    <object3D
+      position-x={position.px}
+      position-y={position.py}
+      position-z={position.pz + 0.001}
+      rotation-x={position.rx}
+      rotation-y={position.ry}
+      rotation-z={position.rz}
+    >
+      <AnimatedMesh rotation-y={0} rotation-z={springs.rotation}>
+        <Suspense
+          fallback={
+            <meshStandardMaterial
+              color={Color.NAMES.grey}
+              opacity={0.2}
+              transparent
+              metalness={0}
+              roughness={0.5}
+            />
+          }
+        >
+          <ChainLinkIndicatorMaterial />
+        </Suspense>
+        <planeGeometry args={[cardScale * 0.5, cardScale * 0.5, 1]} />
+      </AnimatedMesh>
+    </object3D>
+  );
+}
+
+const AnimatedMesh = animated("mesh");
+
+function ChainLinkIndicatorMaterial() {
+  const texture = useTexture(textureChain);
+  return (
+    <meshStandardMaterial
+      map={texture}
+      transparent
+      metalness={0}
+      roughness={0.5}
+      emissive={0xffffff}
+      emissiveIntensity={1}
+      toneMapped={false}
+    />
   );
 }
 
@@ -305,7 +462,9 @@ function GameInitializer({}: {}) {
     }
     if (initPhase === 1 && !isLoading) {
       setInitPhase(2);
-      useGameStore.getState().queueEvent({ event: { type: "start" } });
+      useGameStore
+        .getState()
+        .queueEvent({ event: { type: "start" }, nextState: egs() });
       runSimulatorStep();
     }
   }, [isLoading, initPhase]);
@@ -325,11 +484,11 @@ function HtmlTurnState({}: {}) {
       {event &&
         (event.event.type === "start" || event.event.type === "phase") &&
         animationPhase === 0 && (
-          <htmlMotion.div
+          <motion.div
             key={event.id}
             className="absolute z-10 inset-0 flex items-center justify-center"
           >
-            <htmlMotion.div
+            <motion.div
               className="relative text-[10cqh] text-white font-bold"
               initial="initial"
               animate="enter"
@@ -353,8 +512,8 @@ function HtmlTurnState({}: {}) {
               {event.event.type === "start"
                 ? "DUEL START!"
                 : event.nextState.phase}
-            </htmlMotion.div>
-          </htmlMotion.div>
+            </motion.div>
+          </motion.div>
         )}
     </AnimatePresence>
   );
@@ -362,9 +521,9 @@ function HtmlTurnState({}: {}) {
 
 function Effects() {
   return (
-    <EffectComposer multisampling={0} enableNormalPass>
-      <N8AO intensity={1} distanceFalloff={1} />
-      <SMAA />
+    <EffectComposer>
+      {/* <N8AO intensity={1} distanceFalloff={1} /> */}
+      {/* <SMAA /> */}
       <Bloom />
       <Vignette />
     </EffectComposer>
@@ -378,7 +537,7 @@ function RenderDialog() {
   return (
     <AnimatePresence>
       {idle && dialog && (
-        <htmlMotion.div
+        <motion.div
           key={dialog.id}
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
           initial={{ opacity: 0 }}
@@ -393,6 +552,9 @@ function RenderDialog() {
             {(dialog.type === "yesno" || dialog.type === "effectyn") && (
               <DialogSelectYesNo dialog={dialog} />
             )}
+            {dialog.type === "selectUnselect" && (
+              <DialogSelectUnselect dialog={dialog} />
+            )}
             {dialog.type === "cards" && <DialogSelectCard dialog={dialog} />}
             {dialog.type === "chain" && <DialogSelectChain dialog={dialog} />}
             {dialog.type === "position" && (
@@ -401,8 +563,9 @@ function RenderDialog() {
             {dialog.type === "actionMany" && (
               <DialogSelectActionMany dialog={dialog} />
             )}
+            {dialog.type === "option" && <DialogSelectOption dialog={dialog} />}
           </div>
-        </htmlMotion.div>
+        </motion.div>
       )}
     </AnimatePresence>
   );
@@ -467,6 +630,62 @@ function DialogSelectPosition({
         >
           Confirm
         </Button>
+      </div>
+    </>
+  );
+}
+
+type DialogSelectUnselectProps = {
+  dialog: DialogConfigSelectUnselect;
+};
+
+function DialogSelectUnselect({
+  dialog: { selects, unselects, canCancel, canFinish },
+}: DialogSelectUnselectProps) {
+  return (
+    <>
+      <div className="w-[30cqw] flex overflow-x-auto justify-center">
+        <div className="flex items-center justify-start gap-[1cqw] py-[1cqw]">
+          {unselects.map((c, i) => (
+            <SelectableCard
+              key={i}
+              code={c.code}
+              selected={true}
+              onSelect={() => {}}
+              onUnselect={() => {
+                sendResponse(c.response);
+                runSimulatorStep();
+              }}
+            />
+          ))}
+          {selects.map((c, i) => (
+            <SelectableCard
+              key={i}
+              code={c.code}
+              selected={false}
+              onSelect={() => {
+                sendResponse(c.response);
+                runSimulatorStep();
+              }}
+              onUnselect={() => {}}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center justify-center gap-[2cqw] mt-[1cqw]">
+        {(canCancel || canFinish) && (
+          <Button
+            onClick={() => {
+              sendResponse({
+                type: OcgResponseType.SELECT_UNSELECT_CARD,
+                index: null,
+              });
+              runSimulatorStep();
+            }}
+          >
+            {unselects.length > 0 ? "Finish" : "Cancel"}
+          </Button>
+        )}
       </div>
     </>
   );
@@ -585,6 +804,29 @@ function DialogSelectActionMany({
   );
 }
 
+type DialogSelectOptionProps = {
+  dialog: DialogConfigSelectOption;
+};
+
+function DialogSelectOption({ dialog: { options } }: DialogSelectOptionProps) {
+  return (
+    <div className="w-[30cqw] flex flex-col overflow-x-auto items-center gap-[0.5cqw]">
+      {options.map((o, i) => (
+        <Button
+          className="text-[1cqw] py-[0.2cqw]"
+          key={i}
+          onClick={() => {
+            sendResponse(o.response);
+            runSimulatorStep();
+          }}
+        >
+          {o.name}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 type DialogSelectCardProps = {
   dialog: DialogConfigCards;
 };
@@ -680,49 +922,10 @@ function DialogSelectYesNo({ dialog: { type } }: DialogSelectYesNoProps) {
   );
 }
 
-function updateCardMotionValues(
-  map: Map<string, CardMotionValues>,
-  id: string,
-  mHandOffsetY: MotionValue<number>,
-  mHandOffsetZ: MotionValue<number>,
-  mHandScale: MotionValue<number>,
-  mPosX: MotionValue<number>,
-  mPosY: MotionValue<number>,
-  mPosZ: MotionValue<number>,
-  mRotX: MotionValue<number>,
-  mRotY: MotionValue<number>,
-  mRotZ: MotionValue<number>,
-) {
-  const c = map.get(id);
-  if (!c) {
-    map.set(id, {
-      hpy: mHandOffsetY,
-      hpz: mHandOffsetZ,
-      hs: mHandScale,
-      px: mPosX,
-      py: mPosY,
-      pz: mPosZ,
-      rx: mRotX,
-      ry: mRotY,
-      rz: mRotZ,
-    });
-    return;
-  }
-  c.hpy = mHandOffsetY;
-  c.hpz = mHandOffsetZ;
-  c.hs = mHandScale;
-  c.px = mPosX;
-  c.py = mPosY;
-  c.pz = mPosZ;
-  c.rx = mRotX;
-  c.ry = mRotY;
-  c.rz = mRotZ;
-}
-
 interface RenderCardProps {
   card: CardInfo;
   wrapperRef: Ref<HTMLDivElement>;
-  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+  cardMotionValuesRef: RefObject<Map<string, CardAnimationRef>>;
 }
 
 function RenderCard({
@@ -734,44 +937,24 @@ function RenderCard({
     pos: { location, sequence },
   } = card;
 
-  const ref = useRef<Object3D>(null);
-
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
   const sizes = useControllerSizes(card.pos.controller);
 
-  const { mHandOffsetY, mHandOffsetZ, mHandScale, hover, updateHover } =
-    useHandOffset(card);
+  const { springs: hsprings, hover, updateHover } = useHandOffset(card);
 
-  const [[mPosX, mPosY, mPosZ], [mRotX, mRotY, mRotZ]] =
-    useComputeCardPosition(card);
+  const ref = useComputeCardPosition(card);
+  cardMotionValuesRef.current.set(card.id, ref);
 
-  updateCardMotionValues(
-    cardMotionValuesRef.current,
-    card.id,
-    mHandOffsetY,
-    mHandOffsetZ,
-    mHandScale,
-    mPosX,
-    mPosY,
-    mPosZ,
-    mRotX,
-    mRotY,
-    mRotZ,
+  const px = to([ref.g.springs.px], (px) => px);
+  const py = to(
+    [ref.g.springs.py, ref.o.springs.py, hsprings.hy],
+    (py, opy, hy) => py + opy + hy,
   );
-
-  const x = useTransform<number, number>([mPosX], ([x1]) => x1);
-  const y = useTransform<number, number>(
-    [mPosY, mHandOffsetY],
-    ([y1, y2]) => y1 + y2,
-  );
-  const z = useTransform<number, number>(
-    [mPosZ, mHandOffsetZ],
-    ([z1, z2]) => z1 + z2,
-  );
-  const rotateX = useTransform<number, number>([mRotX], ([x1]) => x1);
-  const rotateY = useTransform<number, number>([mRotY], ([y1]) => y1);
-  const rotateZ = useTransform<number, number>([mRotZ], ([z1]) => z1);
-  const scale = useTransform<number, number>([mHandScale], ([s1]) => s1);
+  const pz = to([ref.g.springs.pz, hsprings.hz], (pz, hz) => pz + hz);
+  const rx = to([ref.g.springs.rx], (rx) => rx);
+  const ry = to([ref.g.springs.ry], (ry) => ry);
+  const rz = to([ref.g.springs.rz], (rz) => rz);
+  const scale = to([hsprings.hs], (hs) => hs);
 
   const onPointerOver = useEventCallback((e: ThreeEvent<PointerEvent>) => {
     updateHover(true);
@@ -787,59 +970,19 @@ function RenderCard({
     e.stopPropagation();
   });
 
-  const isTopDeck = location === "deck" && sequence === 0;
-  const isTopExtra = location === "extra" && sequence === 0;
-  const isTopGrave = location === "grave" && sequence === sizes.grave - 1;
-  const isTopBanish = location === "banish" && sequence === sizes.grave - 1;
-
-  const isInteractive =
-    isDirectInteractionLocation(location) ||
-    isTopDeck ||
-    isTopExtra ||
-    isTopGrave ||
-    isTopBanish;
-
-  useMotionValueEvent(x, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.position.x = v;
-  });
-  useMotionValueEvent(y, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.position.y = v;
-  });
-  useMotionValueEvent(z, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.position.z = v;
-  });
-  useMotionValueEvent(rotateX, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.rotation.x = v;
-  });
-  useMotionValueEvent(rotateY, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.rotation.y = v;
-  });
-  useMotionValueEvent(rotateZ, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.rotation.z = v;
-  });
-  useMotionValueEvent(scale, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.scale.x = v;
-    ref.current.scale.y = v;
-  });
+  const isTop = isPileTop(location, sequence, sizes);
+  const isInteractive = isDirectInteractionLocation(location) || isTop;
 
   return (
-    <object3D
-      ref={ref}
-      position-x={x.get()}
-      position-y={y.get()}
-      position-z={z.get()}
-      rotation-x={rotateX.get()}
-      rotation-y={rotateY.get()}
-      rotation-z={rotateZ.get()}
-      scale-x={scale.get()}
-      scale-y={scale.get()}
+    <AnimatedObject3D
+      position-x={px}
+      position-y={py}
+      position-z={pz}
+      rotation-x={rx}
+      rotation-y={ry}
+      rotation-z={rz}
+      scale-x={scale}
+      scale-y={scale}
     >
       <RenderCardFront
         code={card.code}
@@ -857,9 +1000,11 @@ function RenderCard({
       {isInteractive && (
         <RenderCardActions card={card} wrapperRef={wrapperRef} />
       )}
-    </object3D>
+    </AnimatedObject3D>
   );
 }
+
+const AnimatedObject3D = animated("object3D");
 
 interface RenderCardActionsProps {
   card: CardInfo;
@@ -890,11 +1035,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
     }
 
     // for piles
-    const isTopDeck = location === "deck" && sequence === 0;
-    const isTopExtra = location === "extra" && sequence === 0;
-    const isTopGrave = location === "grave" && sequence === sizes.grave - 1;
-    const isTopBanish = location === "banish" && sequence === sizes.grave - 1;
-    if (isTopDeck || isTopExtra || isTopGrave || isTopBanish) {
+    if (isPileTop(location, sequence, sizes)) {
       return R.pipe(
         actions,
         R.filter(
@@ -1005,29 +1146,25 @@ type CardTextureMaterialProps = {
 
 const CardTextureMaterial = memo(
   ({ hover, code }: CardTextureMaterialProps) => {
-    const ref = useRef<MeshStandardMaterial>(null);
     const frontTexture = useTexture(textureCardFront(code));
 
-    const emissiveIntensity = useAnimatedValue(hover ? 0.03 : 0, {
-      duration: 0.1,
-    });
-    useMotionValueEvent(emissiveIntensity, "change", (v) => {
-      if (!ref.current) return;
-      ref.current.emissiveIntensity = v;
+    const springs = useSpring({
+      emissiveIntensity: hover ? 0.03 : 0,
     });
 
     return (
-      <meshStandardMaterial
-        ref={ref}
+      <AnimatedMeshStandardMaterial
         map={frontTexture}
         metalness={0}
         roughness={0.5}
         emissive={0xffffff}
-        emissiveIntensity={emissiveIntensity.get()}
+        emissiveIntensity={springs.emissiveIntensity}
       />
     );
   },
 );
+
+const AnimatedMeshStandardMaterial = animated("meshStandardMaterial");
 
 CardTextureMaterial.displayName = "CardTextureMaterial";
 
@@ -1061,25 +1198,19 @@ interface CardBackMaterialProps {
 }
 
 const CardBackMaterial = memo(({ hover }: CardBackMaterialProps) => {
-  const ref = useRef<MeshStandardMaterial>(null);
   const backTexture = useTexture(textureCardBack);
 
-  const emissiveIntensity = useAnimatedValue(hover ? 0.03 : 0, {
-    duration: 0.1,
-  });
-  useMotionValueEvent(emissiveIntensity, "change", (v) => {
-    if (!ref.current) return;
-    ref.current.emissiveIntensity = v;
+  const springs = useSpring({
+    emissiveIntensity: hover ? 0.03 : 0,
   });
 
   return (
-    <meshStandardMaterial
-      ref={ref}
+    <AnimatedMeshStandardMaterial
       map={backTexture}
       metalness={0}
       roughness={0.5}
       emissive={0xffffff}
-      emissiveIntensity={emissiveIntensity.get()}
+      emissiveIntensity={springs.emissiveIntensity}
     />
   );
 });

@@ -1,8 +1,10 @@
-import { useAnimatedValue } from "@/lib/hooks/use-animated-value";
-import { useMotionValue } from "framer-motion";
+import { Controller, easings, useSpring } from "@react-spring/three";
 import { useEffect, useState } from "react";
+import * as R from "remeda";
 import { Euler, Vector3 } from "three";
 import { useShallow } from "zustand/react/shallow";
+import { ControllerStateGlobal, ControllerStateOffset } from "../animations";
+import { gs } from "../runner";
 import {
   CardFieldPos,
   CardInfo,
@@ -31,6 +33,8 @@ export const getFieldSlotPosition = (() => {
       vec.set((pos.sequence - 2) * 2.5, -6, 0.01);
     } else if (pos.location === "mainMonsterZone") {
       vec.set((pos.sequence - 2) * 2.5, -3, 0.01);
+    } else if (pos.location === "extraMonsterZone") {
+      vec.set((pos.sequence * 2 - 1) * 2.5, 0, 0.01);
     }
     vec.applyEuler(fieldEuler[pos.controller]);
     return [vec.x, vec.y, vec.z] as const;
@@ -65,7 +69,7 @@ export const getCardPositionObj = (() => {
       if (faceDown) {
         rotFinal.y += 180 * degToRad;
       }
-      if (defense) {
+      if (defense && location !== "extra") {
         rotFinal.z += 90 * degToRad;
       }
 
@@ -127,7 +131,10 @@ const getCardLocalFieldPosition = (() => {
         break;
       }
       case "extra": {
-        position.set(-7.5, -6, (sizes.extra - sequence) * 0.01);
+        const extraDown = sizes.extra - sizes.extraUp;
+        const fup = sequence >= extraDown;
+        const offset = fup ? extraDown + sequence : sizes.extra - sequence;
+        position.set(-7.5, -6, offset * 0.01);
         rotation.set(0, 0, 0);
         break;
       }
@@ -138,6 +145,11 @@ const getCardLocalFieldPosition = (() => {
       }
       case "mainMonsterZone": {
         position.set((sequence - 2) * 2.5, -3, 0.01);
+        rotation.set(0, 0, 0);
+        break;
+      }
+      case "extraMonsterZone": {
+        position.set((sequence * 2 - 1) * 2.5, 0, 0.01);
         rotation.set(0, 0, 0);
         break;
       }
@@ -167,9 +179,14 @@ const getCardLocalFieldPosition = (() => {
   };
 })();
 
+function isFaceUp(c: CardInfo) {
+  return c.position === "up_atk" || c.position === "up_def";
+}
+
 export interface ControllerSizes {
   deck: number;
   extra: number;
+  extraUp: number;
   hand: number;
   grave: number;
   banish: number;
@@ -180,6 +197,7 @@ export function getPlayerSizes(player: PlayerState) {
     deck: player.field.deck.length,
     banish: player.field.banish.length,
     extra: player.field.extra.length,
+    extraUp: R.sumBy(player.field.extra, (c) => (isFaceUp(c) ? 1 : 0)),
     grave: player.field.grave.length,
     hand: player.field.hand.length,
   } as ControllerSizes;
@@ -197,44 +215,37 @@ export function useComputeCardPosition(card: CardInfo) {
     position,
   } = card;
 
-  const idle = useGameStore((s) => s.events.length === 0);
   const sizes = useControllerSizes(controller);
+  const [initialPosition] = useState(() => getCardPositionObj(card, sizes));
 
-  const [initialPosition] = useState(() => {
-    const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-      card,
-      sizes,
-    );
-    return { posX, posY, posZ, rotX, rotY, rotZ };
+  const [global] = useState(() => {
+    return new Controller<ControllerStateGlobal>({
+      px: initialPosition.px,
+      py: initialPosition.py,
+      pz: initialPosition.pz,
+      rx: initialPosition.rx,
+      ry: initialPosition.ry,
+      rz: initialPosition.rz,
+    });
   });
 
-  const mPosX = useMotionValue(initialPosition.posX);
-  const mPosY = useMotionValue(initialPosition.posY);
-  const mPosZ = useMotionValue(initialPosition.posZ);
-  const mRotX = useMotionValue(initialPosition.rotX);
-  const mRotY = useMotionValue(initialPosition.rotY);
-  const mRotZ = useMotionValue(initialPosition.rotZ);
+  const [offset] = useState(() => {
+    return new Controller<ControllerStateOffset>({
+      py: 0,
+    });
+  });
 
   useEffect(() => {
-    if (!idle) {
+    if (gs().events.length > 0) {
       return;
     }
-    const [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardPosition(
-      card,
-      sizes,
-    );
-    mPosX.jump(posX);
-    mPosY.jump(posY);
-    mPosZ.jump(posZ);
-    mRotX.jump(rotX);
-    mRotY.jump(rotY);
-    mRotZ.jump(rotZ);
-  }, [idle, controller, location, overlay, sequence, position, sizes]);
+    global.stop(true);
+    global.set(getCardPositionObj(card, sizes));
+    offset.stop(true);
+    offset.set({ py: 0 });
+  }, [controller, location, overlay, sequence, position, sizes]);
 
-  return [
-    [mPosX, mPosY, mPosZ],
-    [mRotX, mRotY, mRotZ],
-  ] as const;
+  return { g: global, o: offset };
 }
 
 export function useHandOffset(card: CardInfo) {
@@ -250,39 +261,30 @@ export function useHandOffset(card: CardInfo) {
 
   const selected = selectedCard && isCardPosEqual(selectedCard, card.pos);
 
-  let handOffsetY = 0;
-  let handOffsetZ = 0;
-  let handScale = 1;
+  let hy = 0;
+  let hz = 0;
+  let hs = 1;
 
   if (location === "hand") {
     const handSize = playerField.field.hand.length;
     const mult = controller === 0 ? 1 : -1;
-    handOffsetY = selected ? 0.15 * mult : isHover ? 0.15 * mult : 0;
-    handScale = selected ? 1.05 : 1;
-    handOffsetZ = selected
-      ? (handSize + 1) * 0.01
-      : isHover
-        ? handSize * 0.01
-        : 0;
+    hy = selected ? 0.15 * mult : isHover ? 0.15 * mult : 0;
+    hs = selected ? 1.05 : 1;
+    hz = selected ? (handSize + 1) * 0.01 : isHover ? handSize * 0.01 : 0;
   }
 
-  const mHandOffsetY = useAnimatedValue(handOffsetY, {
-    type: "tween",
-    duration: 0.15,
-  });
-  const mHandOffsetZ = useAnimatedValue(handOffsetZ, {
-    type: "tween",
-    duration: 0.15,
-  });
-  const mHandScale = useAnimatedValue(handScale, {
-    type: "tween",
-    duration: 0.15,
+  const springs = useSpring({
+    hy,
+    hz,
+    hs,
+    config: {
+      ease: easings.easeInOutQuad,
+      duration: 150,
+    },
   });
 
   return {
-    mHandOffsetY,
-    mHandOffsetZ,
-    mHandScale,
+    springs,
     hover,
     updateHover,
   };

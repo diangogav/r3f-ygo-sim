@@ -1,4 +1,4 @@
-import clsx from "clsx";
+import { cn } from "@/lib/cn";
 import { ReactNode, useState } from "react";
 import { DebugEventQueue } from "./events";
 import { DebugOcgMessages } from "./ocg-messages";
@@ -11,7 +11,7 @@ export function DebugMenu() {
 
   return (
     <div
-      className={clsx(
+      className={cn(
         "absolute top-4 right-4 flex flex-col gap-2 items-end",
         view !== null && "bottom-4",
       )}
@@ -49,7 +49,7 @@ function DebugMenuButton({
 }: DebugMenuButtonProps) {
   return (
     <button
-      className={clsx(
+      className={cn(
         "bg-orange-500 hover:bg-orange-400 py-1 px-2 uppercase font-bold text-sm",
         view === target && "bg-orange-700 hover:bg-orange-800",
       )}

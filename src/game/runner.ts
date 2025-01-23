@@ -33,11 +33,14 @@ import {
   CardPos,
   CardPosition,
   PartialCardInfo,
+  appendChain,
   cardPos,
   extractEventGS,
   getCardInPos,
   moveCard,
+  popChain,
   reorderHand,
+  setCard,
   useGameStore,
 } from "./state";
 import { textureCardFront } from "./textures";
@@ -89,9 +92,9 @@ export async function createGame(signal?: AbortSignal) {
   };
 
   const seed: [bigint, bigint, bigint, bigint] = [
-    12388289193n,
-    2239912n,
-    144949391n,
+    1238828193n,
+    223912n,
+    144449391n,
     34443414123n,
   ];
   const duel = ocg.createDuel({
@@ -106,7 +109,6 @@ export async function createGame(signal?: AbortSignal) {
       };
     },
     scriptReader(name) {
-      // console.log("load script", name);
       return loadedData.scripts.get(name) ?? "";
     },
     errorHandler(type, text) {
@@ -224,11 +226,11 @@ function convertPosition(o: OcgPosition): CardInfo["position"] | null {
   if (o & OcgPosition.FACEUP_ATTACK) {
     return "up_atk";
   }
-  if (o & OcgPosition.FACEUP_DEFENSE) {
-    return "up_def";
-  }
   if (o & OcgPosition.FACEDOWN_ATTACK) {
     return "down_atk";
+  }
+  if (o & OcgPosition.FACEUP_DEFENSE) {
+    return "up_def";
   }
   if (o & OcgPosition.FACEDOWN_DEFENSE) {
     return "down_def";
@@ -372,7 +374,7 @@ export function gs() {
 
 export function runSimulatorStep() {
   if (!ocg || !gameInstance) {
-    return null;
+    return;
   }
 
   const messages: OcgMessage[] = [];
@@ -386,9 +388,9 @@ export function runSimulatorStep() {
     }
   }
 
-  useGameStore.getState().appendDuelLog(...messages);
+  gs().appendDuelLog(...messages);
 
-  for (const m of messages) {
+  for (const [index, m] of messages.entries()) {
     switch (m.type) {
       case OcgMessageType.START: {
         break;
@@ -496,8 +498,20 @@ export function runSimulatorStep() {
         }
         break;
       }
+      case OcgMessageType.SELECT_OPTION: {
+        gs().openDialog({
+          type: "option",
+          id: crypto.randomUUID(),
+          player: m.player as 0 | 1,
+          title: "Select an option",
+          options: m.options.map((o, i) => ({
+            name: getDesc(o) ?? o.toString(),
+            response: { type: OcgResponseType.SELECT_OPTION, index: i },
+          })),
+        });
+        break;
+      }
       case OcgMessageType.SELECT_IDLECMD: {
-        console.log(`Select idle command for Player ${m.player + 1}`);
         const actions: CardAction[] = [];
         for (const [index, action] of m.activates.entries()) {
           actions.push({
@@ -593,14 +607,36 @@ export function runSimulatorStep() {
         const code = dest.location === "deck" ? 0 : m.card;
 
         const card = getCardInPos(egs(), source)!;
+
+        if (code) {
+          preloadTexture(code);
+          gs().updateCards([{ id: card.id, code }]);
+        }
+
         const nextState = moveCard(egs(), { ...card, code, position }, dest);
         const nextCard = getCardInPos(nextState, dest)!;
         gs().queueEvent({
-          event: {
-            type: "move",
-            card,
-            nextCard,
-          },
+          event: { type: "move", card, nextCard },
+          nextState,
+        });
+        break;
+      }
+      case OcgMessageType.POS_CHANGE: {
+        const source = convertLocation(m)!;
+        const card = getCardInPos(egs(), source)!;
+        const position = convertPosition(m.position)!;
+        const code =
+          position === "up_atk" || position === "up_def" ? m.code : 0;
+
+        if (code) {
+          preloadTexture(code);
+          gs().updateCards([{ id: card.id, code }]);
+        }
+
+        const nextState = setCard(egs(), { ...card, code, position }, card.pos);
+        const nextCard = getCardInPos(nextState, card.pos)!;
+        gs().queueEvent({
+          event: { type: "move", card, nextCard },
           nextState,
         });
         break;
@@ -623,16 +659,27 @@ export function runSimulatorStep() {
       case OcgMessageType.SHUFFLE_DECK: {
         break;
       }
+      case OcgMessageType.SPSUMMONING: {
+        // attach event to last move
+        const lastEvent = gs().events.at(-1);
+        if (lastEvent?.event.type === "move") {
+          gs().queueEvent(
+            {
+              event: { ...lastEvent.event, reason: "spsummon" },
+              nextState: lastEvent.nextState,
+            },
+            true,
+          );
+        }
+        break;
+      }
       case OcgMessageType.SUMMONING: {
         // attach event to last move
         const lastEvent = gs().events.at(-1);
         if (lastEvent?.event.type === "move") {
           gs().queueEvent(
             {
-              event: {
-                ...lastEvent.event,
-                reason: "summon",
-              },
+              event: { ...lastEvent.event, reason: "summon" },
               nextState: lastEvent.nextState,
             },
             true,
@@ -644,6 +691,24 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.CHAINING: {
+        const origin = convertLocation(m)!;
+        const trigger = convertLocation({
+          controller: m.triggering_controller,
+          location: m.triggering_location,
+          sequence: m.triggering_sequence,
+        })!;
+
+        const card = getCardInPos(egs(), origin)!;
+
+        const nextState = appendChain(egs(), {
+          card,
+          trigger,
+          link: m.chain_size,
+        });
+        gs().queueEvent({
+          event: { type: "chain", card, trigger, link: m.chain_size },
+          nextState,
+        });
         break;
       }
       case OcgMessageType.CHAINED: {
@@ -653,6 +718,11 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.CHAIN_SOLVED: {
+        const nextState = popChain(egs());
+        gs().queueEvent({
+          event: { type: "chainSolved", link: m.chain_size },
+          nextState,
+        });
         break;
       }
       case OcgMessageType.CHAIN_END: {
@@ -665,22 +735,15 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SELECT_CHAIN: {
-        // const actions: CardAction[] = [];
-        // if (m.selects.length === 0 || !m.forced) {
-        //   actions.push({
-        //     kind: "continue",
-        //     response: { type: OcgResponseType.SELECT_CHAIN, index: -1 },
-        //     pos: null,
-        //   });
-        // }
-        // for (const [index, action] of m.selects.entries()) {
-        //   actions.push({
-        //     kind: "activate",
-        //     response: { type: OcgResponseType.SELECT_CHAIN, index },
-        //     pos: convertLocation(action),
-        //   });
-        // }
-        // gs().setActions(actions);
+        if (m.selects.length === 0) {
+          // TODO: maybe move somewhere else
+          setTimeout(() => {
+            sendResponse({ type: OcgResponseType.SELECT_CHAIN, index: null });
+            runSimulatorStep();
+          }, 1);
+          break;
+        }
+
         gs().openDialog({
           id: crypto.randomUUID(),
           title: m.forced ? `Chain an optional effect.` : "Chain an effect.",
@@ -696,10 +759,7 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SELECT_YESNO: {
-        const title = getHint(m.description);
-        console.log(
-          `Select Yes/No message for player ${m.player + 1}: ${title}`,
-        );
+        const title = getDesc(m.description);
         gs().openDialog({
           id: crypto.randomUUID(),
           title: title ?? `${m.description}`,
@@ -728,15 +788,11 @@ export function runSimulatorStep() {
           text = `${event_string}\n${formatted}\n${getSysString(223) ?? ""}`;
         } else {
           const formatted = sprintf(
-            getHint(m.description) ?? "",
+            getDesc(m.description) ?? "",
             getCardName(m.code),
           );
           text = formatted;
         }
-
-        console.log(
-          `Select Yes/No message for player ${m.player + 1}: ${text}`,
-        );
 
         gs().openDialog({
           id: crypto.randomUUID(),
@@ -747,7 +803,6 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SELECT_CARD: {
-        console.log(`Select cards for player ${m.player + 1}.`);
         gs().openDialog({
           id: crypto.randomUUID(),
           title: `Select ${m.min} to ${m.max} card(s).`,
@@ -787,20 +842,51 @@ export function runSimulatorStep() {
         });
         break;
       }
+      case OcgMessageType.SELECT_UNSELECT_CARD: {
+        gs().openDialog({
+          id: crypto.randomUUID(),
+          title: `Select/unselect cards`,
+          type: "selectUnselect",
+          player: m.player as 0 | 1,
+          min: m.min,
+          max: m.max,
+          canCancel: m.can_cancel,
+          canFinish: m.can_finish,
+          selects: m.select_cards.map((s, i) => ({
+            code: s.code,
+            ...convertLocation(s)!,
+            position: convertPosition(s.position)!,
+            response: {
+              type: OcgResponseType.SELECT_UNSELECT_CARD,
+              index: i,
+            },
+          })),
+          unselects: m.unselect_cards.map((s, i) => ({
+            code: s.code,
+            ...convertLocation(s)!,
+            position: convertPosition(s.position)!,
+            response: {
+              type: OcgResponseType.SELECT_UNSELECT_CARD,
+              index: m.select_cards.length + i,
+            },
+          })),
+        });
+        break;
+      }
       case OcgMessageType.HINT: {
         switch (m.hint_type) {
           case OcgHintType.MESSAGE: {
-            const msg = getHint(m.hint);
+            const msg = getDesc(m.hint);
             console.log(`Hint message for player ${m.player + 1}: ${msg}`);
             break;
           }
           case OcgHintType.EVENT: {
-            const msg = getHint(m.hint);
+            const msg = getDesc(m.hint);
             console.log(`Hint event for player ${m.player + 1}: ${msg}`);
             break;
           }
           case OcgHintType.SELECTMSG: {
-            const msg = getHint(m.hint);
+            const msg = getDesc(m.hint);
             console.log(`Hint select for player ${m.player + 1}: ${msg}`);
             break;
           }
@@ -815,14 +901,11 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.CARD_HINT: {
-        const msg = getHint(m.description);
+        const msg = getDesc(m.description);
         console.log(`Hint message for player ${m.controller + 1}: ${msg}`);
         break;
       }
       case OcgMessageType.CONFIRM_CARDS: {
-        console.log(
-          `Confirm ${m.cards.length} cards for player ${m.player + 1}`,
-        );
         break;
       }
       case OcgMessageType.RETRY: {
@@ -892,7 +975,6 @@ export function sendResponse(resp: OcgResponse) {
   if (!ocg || !gameInstance) {
     return;
   }
-  console.log("send response", resp);
   useGameStore.getState().setActions([]);
   useGameStore.getState().closeDialog();
   useGameStore.getState().setSelectedCard(null);
@@ -900,7 +982,7 @@ export function sendResponse(resp: OcgResponse) {
   ocg.duelSetResponse(gameInstance, resp);
 }
 
-export function getHint(inCode: bigint | number): string | null {
+export function getDesc(inCode: bigint | number): string | null {
   const code = Number(
     typeof inCode === "bigint" ? inCode >> 20n : inCode >> 20,
   );

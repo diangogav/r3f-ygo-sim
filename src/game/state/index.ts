@@ -3,10 +3,12 @@ import { OcgMessage, OcgResponse } from "ocgcore-wasm";
 import * as R from "remeda";
 import { create } from "zustand";
 import { combine } from "zustand/middleware";
+import { ControllerSizes } from "../utils/position";
 import { DuelEvent } from "./event";
 
 export interface GameState {
   players: [PlayerState, PlayerState];
+  chain: ChainState[];
   turn: number;
   turnPlayer: 0 | 1;
   phase: GameStatePhases;
@@ -23,7 +25,7 @@ export interface GameState {
 
 export type EventGameState = Pick<
   GameState,
-  "players" | "turn" | "turnPlayer" | "phase"
+  "players" | "turn" | "turnPlayer" | "phase" | "chain"
 >;
 
 type GameStatePhases =
@@ -74,6 +76,10 @@ export type PartialCardInfo = Pick<CardInfo, "id"> &
   Partial<Omit<CardInfo, "id">>;
 
 export type CardPosition = "up_atk" | "up_def" | "down_atk" | "down_def";
+
+export function isFaceup(p: CardPosition): p is "up_atk" | "up_def" {
+  return p === "up_atk" || p === "up_def";
+}
 
 export type CardLocation = keyof PlayerState["field"];
 
@@ -144,13 +150,47 @@ export interface DialogConfigPosition extends DialogConfigBase {
   positions: CardPosition[];
 }
 
+export interface DialogConfigSelectUnselect extends DialogConfigBase {
+  type: "selectUnselect";
+  min: number;
+  max: number;
+  canCancel: boolean;
+  canFinish: boolean;
+  selects: {
+    code: number;
+    controller: 0 | 1;
+    location: CardLocation;
+    position: CardPosition;
+    sequence: number;
+    response: OcgResponse;
+  }[];
+  unselects: {
+    code: number;
+    controller: 0 | 1;
+    location: CardLocation;
+    position: CardPosition;
+    sequence: number;
+    response: OcgResponse;
+  }[];
+}
+
+export interface DialogConfigSelectOption extends DialogConfigBase {
+  type: "option";
+  options: {
+    name: string;
+    response: OcgResponse;
+  }[];
+}
+
 export type DialogConfig =
   | DialogConfigYesNo
   | DialogConfigEffectYesNo
   | DialogConfigCards
   | DialogConfigChain
   | DialogConfigActionMany
-  | DialogConfigPosition;
+  | DialogConfigPosition
+  | DialogConfigSelectUnselect
+  | DialogConfigSelectOption;
 
 export interface PlayerState {
   lp: number;
@@ -165,6 +205,12 @@ export interface PlayerState {
     spellZone: Tuple<CardInfo | null, 5>;
     fieldZone: CardInfo | null;
   };
+}
+
+export interface ChainState {
+  link: number;
+  card: CardInfo;
+  trigger: CardPos;
 }
 
 function createInitialPlayerState(): PlayerState {
@@ -188,6 +234,7 @@ export const useGameStore = create(
   combine(
     {
       players: [createInitialPlayerState(), createInitialPlayerState()],
+      chain: [],
       turn: 0,
       turnPlayer: 0,
       phase: "dp",
@@ -208,25 +255,11 @@ export const useGameStore = create(
           debug: { ...debug, ocgMessages: [...debug.ocgMessages, ...messages] },
         }));
       },
-      queueEvent(
-        event: Omit<DuelEventEntry, "id" | "nextState"> &
-          Partial<Pick<DuelEventEntry, "nextState">>,
-        replaceLast?: boolean,
-      ) {
-        set(({ events, players, turn, turnPlayer, phase }) => ({
+      queueEvent(event: Omit<DuelEventEntry, "id">, replaceLast?: boolean) {
+        set(({ events }) => ({
           events: [
             ...events.slice(0, replaceLast ? -1 : undefined),
-            {
-              ...event,
-              id: crypto.randomUUID(),
-              nextState: event.nextState ??
-                events.at(-1)?.nextState ?? {
-                  players,
-                  turn,
-                  turnPlayer,
-                  phase,
-                },
-            },
+            { ...event, id: crypto.randomUUID() },
           ],
         }));
       },
@@ -243,7 +276,7 @@ export const useGameStore = create(
         set((state) => ({
           ...R.pick(
             state.events.at(0)?.nextState ?? ({} as Partial<EventGameState>),
-            ["players", "turn", "turnPlayer", "phase"],
+            ["players", "turn", "turnPlayer", "phase", "chain"],
           ),
           events: state.events.slice(1),
         }));
@@ -274,8 +307,9 @@ export function extractEventGS({
   turn,
   turnPlayer,
   phase,
-}: GameState) {
-  return { players, turn, turnPlayer, phase };
+  chain,
+}: GameState): EventGameState {
+  return { players, turn, turnPlayer, phase, chain };
 }
 
 export function cardPos(
@@ -285,6 +319,25 @@ export function cardPos(
   overlay: number | null = null,
 ): CardPos {
   return { controller, location, sequence, overlay };
+}
+
+export function appendChain<State extends Pick<GameState, "chain">>(
+  state: State,
+  chained: ChainState,
+): State {
+  return {
+    ...state,
+    chain: [...state.chain, chained],
+  };
+}
+
+export function popChain<State extends Pick<GameState, "chain">>(
+  state: State,
+): State {
+  return {
+    ...state,
+    chain: state.chain.slice(0, state.chain.length - 1),
+  };
 }
 
 export function moveCard<State extends Pick<GameState, "players">>(
@@ -306,6 +359,7 @@ export function reorderHand<State extends Pick<GameState, "players">>(
       i !== controller
         ? player
         : {
+            ...player,
             field: {
               ...player.field,
               hand: R.pipe(
@@ -368,6 +422,28 @@ export function isPileLocation(
   location: CardLocation,
 ): location is (typeof pileLocations)[number] {
   return (pileLocations as readonly CardLocation[]).includes(location);
+}
+
+export function isPileTop(
+  location: CardLocation,
+  sequence: number,
+  sizes: ControllerSizes,
+) {
+  switch (location) {
+    case "deck":
+      return sequence === 0;
+    case "grave":
+      return sequence === sizes.grave - 1;
+    case "banish":
+      return sequence === sizes.banish - 1;
+    case "extra":
+      if (sizes.extraUp === 0) {
+        return sequence === 0;
+      }
+      return sequence === sizes.extra - 1;
+    default:
+      return false;
+  }
 }
 
 const fieldLocations = [
@@ -469,7 +545,7 @@ export function getCardInPos(
   return field[location][sequence] ?? null;
 }
 
-function setCard<State extends Pick<GameState, "players">>(
+export function setCard<State extends Pick<GameState, "players">>(
   state: State,
   card: CardInfo | null,
   { controller, location, sequence }: CardPos,
@@ -480,19 +556,22 @@ function setCard<State extends Pick<GameState, "players">>(
 
   return {
     ...state,
-    players: R.map(state.players, (player, i) =>
-      i !== controller
-        ? player
-        : {
-            field: {
-              ...player.field,
-              [location]: isPileLocation(location)
-                ? updatePile(player.field[location], newCard, sequence)
-                : location === "fieldZone"
-                  ? newCard
-                  : updateSlots(player.field[location], newCard, sequence),
+    players: R.map(
+      state.players,
+      (player, i): PlayerState =>
+        i !== controller
+          ? player
+          : {
+              ...player,
+              field: {
+                ...player.field,
+                [location]: isPileLocation(location)
+                  ? updatePile(player.field[location], newCard, sequence)
+                  : location === "fieldZone"
+                    ? newCard
+                    : updateSlots(player.field[location], newCard, sequence),
+              },
             },
-          },
     ),
   };
 }
@@ -539,34 +618,3 @@ export function isCardPosEqual(a: CardPos, b: CardPos) {
     a.overlay === b.overlay
   );
 }
-
-// if (isPileLocation(location)) {
-//   const store = state.players[controller].field[location];
-//   if (sequence < 0) {
-//     if (card) {
-//       store.unshift(card);
-//     }
-//   } else if (sequence >= store.length) {
-//     if (card) {
-//       store.push(card);
-//     }
-//   } else if (card) {
-//     store.splice(sequence, 1, cardWithPos(card, controller, location, 0));
-//   } else {
-//     store.splice(sequence, 1);
-//   }
-//   for (let i = 0; i < store.length; i++) {
-//     store[i].pos.location = location;
-//     store[i].pos.sequence = i;
-//   }
-// } else if (location === "fieldZone") {
-//   state.players[controller].field[location] = cardWithPos(
-//     card,
-//     controller,
-//     location,
-//     0
-//   );
-// } else {
-//   const store = state.players[controller].field[location];
-//   store[sequence] = cardWithPos(card, controller, location, sequence);
-// }

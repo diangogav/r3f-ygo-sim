@@ -1,5 +1,5 @@
+import { animated, useSpring } from "@react-spring/three";
 import { useTexture } from "@react-three/drei";
-import { motion } from "framer-motion-3d";
 import { OcgResponseType } from "ocgcore-wasm";
 import { ComponentProps, Suspense, useState } from "react";
 import { Color } from "three";
@@ -10,8 +10,10 @@ import { degToRad, getFieldSlotPosition } from "./utils/position";
 
 export function GameSelectField({}: {}) {
   const selectField = useGameStore((s) => s.selectField);
+  const idle = useGameStore((s) => s.events.length === 0);
 
   return (
+    idle &&
     selectField && (
       <GameSelectFieldInterface
         positions={selectField.positions}
@@ -92,6 +94,8 @@ function RenderSelectFieldSlot({
   const [hover, setHover] = useState(false);
   const [posX, posY, posZ] = getFieldSlotPosition(pos);
 
+  const springs = useSpring({ color: hover ? "#faf148" : "#79a6d9" });
+
   return (
     <mesh
       position={[posX, posY, posZ]}
@@ -111,22 +115,21 @@ function RenderSelectFieldSlot({
           />
         }
       >
-        <MaterialSelectFieldSlot
-          animate={{ color: hover ? "#3333ff" : "#aaaaff" }}
-          transition={{ type: "spring", bounce: 0, duration: 0.2 }}
-        />
+        <MaterialSelectFieldSlot color={springs.color} />
       </Suspense>
       <planeGeometry args={[cardScale, cardScale, 1]} />
     </mesh>
   );
 }
 
-function MaterialSelectFieldSlot({
-  ...props
-}: ComponentProps<typeof motion.meshStandardMaterial>) {
+const AnimatedMeshStandardMaterial = animated("meshStandardMaterial");
+
+function MaterialSelectFieldSlot(
+  props: ComponentProps<typeof AnimatedMeshStandardMaterial>,
+) {
   const slotTexture = useTexture(textureSlot);
   return (
-    <motion.meshStandardMaterial
+    <AnimatedMeshStandardMaterial
       map={slotTexture}
       transparent
       metalness={0}

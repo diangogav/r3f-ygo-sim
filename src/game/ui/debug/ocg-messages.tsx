@@ -13,7 +13,7 @@ import {
 import { Fragment, ReactNode } from "react";
 import { omit } from "remeda";
 import { fieldMaskMapping } from "../../../lib/parse-field-mask";
-import { getCardName, getHint } from "../../runner";
+import { getCardName, getDesc } from "../../runner";
 import { useGameStore } from "../../state";
 
 export function DebugOcgMessages() {
@@ -59,12 +59,13 @@ function messageContent(m: OcgMessage) {
     case OcgMessageType.NEW_PHASE: {
       return <div>{ocgPhaseString.get(m.phase)}</div>;
     }
+    // case OcgMessageType.CARD_HINT
     case OcgMessageType.HINT: {
       switch (m.hint_type) {
         case OcgHintType.MESSAGE: {
           return (
             <div>
-              Message for P{m.player + 1}: "{getHint(m.hint)}" (
+              Message for P{m.player + 1}: "{getDesc(m.hint)}" (
               {m.hint.toString()})
             </div>
           );
@@ -72,7 +73,7 @@ function messageContent(m: OcgMessage) {
         case OcgHintType.EVENT: {
           return (
             <div>
-              Event for P{m.player + 1}: "{getHint(m.hint)}" (
+              Event for P{m.player + 1}: "{getDesc(m.hint)}" (
               {m.hint.toString()})
             </div>
           );
@@ -80,7 +81,7 @@ function messageContent(m: OcgMessage) {
         case OcgHintType.SELECTMSG: {
           return (
             <div>
-              Select for P{m.player + 1}: "{getHint(m.hint)}" (
+              Select for P{m.player + 1}: "{getDesc(m.hint)}" (
               {m.hint.toString()})
             </div>
           );
@@ -114,6 +115,14 @@ function messageContent(m: OcgMessage) {
           </div>
           <div>From: {cardLocation(m.from)}</div>
           <div>To: {cardLocation(m.to)}</div>
+        </>
+      );
+    }
+    case OcgMessageType.POS_CHANGE: {
+      return (
+        <>
+          <div>{card(m.code, m)}</div>
+          <div>Previous: {cardLocation({ position: m.prev_position })}</div>
         </>
       );
     }
@@ -178,11 +187,77 @@ function messageContent(m: OcgMessage) {
         </>
       );
     }
+    case OcgMessageType.SELECT_CARD: {
+      return (
+        <>
+          <div>Player: P{m.player + 1}</div>
+          <div>Can cancel: {bool(m.can_cancel)}</div>
+          <div>
+            Pick {m.min} to {m.max}:{" "}
+            {join(m.selects.map((s) => card(s.code, s)))}
+          </div>
+        </>
+      );
+    }
+    case OcgMessageType.SHUFFLE_DECK: {
+      return <div>Player: P{m.player + 1}</div>;
+    }
+    case OcgMessageType.SHUFFLE_HAND: {
+      return (
+        <div>
+          P{m.player + 1} cards: {join(m.cards.map((s) => card(s)))}
+        </div>
+      );
+    }
+    case OcgMessageType.CONFIRM_CARDS: {
+      return (
+        <div>
+          P{m.player + 1} confirms: {join(m.cards.map((s) => card(s.code, s)))}
+        </div>
+      );
+    }
+    case OcgMessageType.SET: {
+      return <div>{card(m.code, m)}</div>;
+    }
     case OcgMessageType.SUMMONING: {
       return <div>{card(m.code, m)}</div>;
     }
     case OcgMessageType.SET: {
       return <div>{card(m.code, m)}</div>;
+    }
+    case OcgMessageType.CHAINING: {
+      return (
+        <>
+          <div>
+            <span className="bg-white/10 inline-block px-1">
+              "{getCardName(m.code)}"
+            </span>
+          </div>
+          <div>Chain size: {m.chain_size}</div>
+          <div>Description: {m.description}</div>
+          <div>Location: {cardLocation(m)}</div>
+          <div>
+            Trigger Location:{" "}
+            {cardLocation({
+              controller: m.triggering_controller,
+              location: m.triggering_location,
+              sequence: m.triggering_sequence,
+            })}
+          </div>
+        </>
+      );
+    }
+    case OcgMessageType.CHAIN_END: {
+      return null;
+    }
+    case OcgMessageType.CHAINED: {
+      return <div>Size: {m.chain_size}</div>;
+    }
+    case OcgMessageType.CHAIN_SOLVING: {
+      return <div>Size: {m.chain_size}</div>;
+    }
+    case OcgMessageType.CHAIN_SOLVED: {
+      return <div>Size: {m.chain_size}</div>;
     }
     default: {
       return (

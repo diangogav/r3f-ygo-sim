@@ -1,7 +1,10 @@
 import imageLoader from "next/dist/shared/lib/image-loader";
 
 export const textureSlot = "/images/slot.png";
+
 export const textureHighlight = "/images/card-highlight.png";
+
+export const textureChain = "/images/chain.png";
 
 export const textureCardFront = (code: number) =>
   getProxiedUrl(`https://images.ygoprodeck.com/images/cards/${code}.jpg`);

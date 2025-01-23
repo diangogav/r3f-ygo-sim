@@ -1,12 +1,25 @@
-import { animate, AnimationSequence, MotionValue } from "framer-motion";
+import { delay } from "@/lib/delay";
+import {
+  AsyncResult,
+  Controller,
+  ControllerUpdate,
+  easings,
+} from "@react-spring/three";
 import { RefObject, useEffect } from "react";
 import { gs } from "./runner";
-import { EventGameState, isFieldNotPileLocation, useGameStore } from "./state";
+import {
+  EventGameState,
+  extractEventGS,
+  isCardPosEqual,
+  isFaceup,
+  isFieldNotPileLocation,
+  useGameStore,
+} from "./state";
 import { DuelEventMove } from "./state/event";
 import { getCardPositionObj, getPlayerSizes } from "./utils/position";
 
 export interface CardAnimationsProps {
-  cardMotionValuesRef: RefObject<Map<string, CardMotionValues>>;
+  cardMotionValuesRef: RefObject<Map<string, CardAnimationRef>>;
 }
 
 export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
@@ -18,13 +31,25 @@ export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
     }
 
     const { event, nextState } = currentEvent;
-    console.log("animating", currentEvent.id, event);
+    console.log(
+      "animating",
+      currentEvent.id,
+      event,
+      extractEventGS(gs()),
+      nextState,
+    );
 
     const context: AnimationContext = {
-      sequence: [],
-      cardMVs: cardMotionValuesRef.current,
+      promises: [],
+      toCancel: [],
+      cardApis: cardMotionValuesRef.current,
       currentState: gs(),
       nextState: nextState,
+      runAnimation(ref, g, o) {
+        this.toCancel.push(ref);
+        g && this.promises.push(ref.g.start([g]));
+        o && this.promises.push(ref.o.start([o]));
+      },
     };
 
     switch (event.type) {
@@ -32,8 +57,11 @@ export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
         const from = event.card.pos;
         const to = event.nextCard.pos;
         animateMove(event, context);
-        if (from.location === "hand" || to.location === "hand") {
+        if (from.location === "hand") {
           animateReorderHand(from.controller, context);
+        }
+        if (to.location === "hand") {
+          animateReorderHand(to.controller, context);
         }
         break;
       }
@@ -47,39 +75,76 @@ export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
         break;
       }
       case "shuffle": {
-        animateReorderHand(event.player, context);
+        animateShuffleHand(event.player, context);
         break;
       }
       default:
         return;
     }
 
-    const animation = animate(context.sequence);
-    const onCompleted = () => setTimeout(() => gs().nextEvent(), 200);
-    animation.then(onCompleted, onCompleted);
-    return () => animation.cancel();
+    let complete = false;
+    Promise.allSettled(context.promises)
+      .then((results) => {
+        // console.log(results);
+        const cancelled = results.filter(
+          (r) => r.status === "fulfilled" && r.value.cancelled,
+        );
+        if (cancelled.length > 0) {
+          console.log("CANCELLED!?!", cancelled);
+        }
+        return delay(50);
+      })
+      .then(() => {
+        if (complete) return;
+
+        complete = true;
+        // console.log("COMPLETE", currentEvent.id);
+        gs().nextEvent();
+      });
+
+    return () => {
+      if (complete) return;
+
+      complete = true;
+      for (const api of context.toCancel) {
+        api.g.stop(true);
+        api.o.stop(true);
+      }
+    };
   }, [currentEvent?.id]);
 
   return <></>;
 }
 
-export interface CardMotionValues {
-  px: MotionValue<number>;
-  py: MotionValue<number>;
-  pz: MotionValue<number>;
-  rx: MotionValue<number>;
-  ry: MotionValue<number>;
-  rz: MotionValue<number>;
-  hpy: MotionValue<number>;
-  hpz: MotionValue<number>;
-  hs: MotionValue<number>;
+export interface ControllerStateGlobal {
+  px: number;
+  py: number;
+  pz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+export interface ControllerStateOffset {
+  py: number;
+}
+
+export interface CardAnimationRef {
+  g: Controller<ControllerStateGlobal>;
+  o: Controller<ControllerStateOffset>;
 }
 
 interface AnimationContext {
-  sequence: AnimationSequence;
+  runAnimation: (
+    ref: CardAnimationRef,
+    g?: ControllerUpdate<ControllerStateGlobal>,
+    o?: ControllerUpdate<ControllerStateOffset>,
+  ) => void;
+  promises: AsyncResult<Controller<any>>[];
+  toCancel: CardAnimationRef[];
   currentState: EventGameState;
   nextState: EventGameState;
-  cardMVs: Map<string, CardMotionValues>;
+  cardApis: Map<string, CardAnimationRef>;
 }
 
 function animatePlayerDraws(
@@ -96,104 +161,147 @@ function animatePlayerDraws(
     const card = currentDeck[i];
     const nextCard = nextHand.find((c) => c.id === card.id)!;
     const newPos = getCardPositionObj(nextCard, nextSizes);
-    const m = c.cardMVs.get(card.id)!;
+    const api = c.cardApis.get(card.id)!;
 
-    const offset = i * 0.2;
-    const speed = 0.3;
+    const offset = i * 100;
+    const speed = 300;
 
     if (controller === 0) {
-      c.sequence.push(
-        [m.hs, 1.1, { duration: speed, at: offset }],
-        [m.px, newPos.px, { duration: speed, at: offset }],
-        [m.py, newPos.py + 3, { duration: speed, at: offset }],
-        [m.pz, newPos.pz, { duration: speed, at: offset }],
-        [m.rx, newPos.rx, { duration: speed, at: offset }],
-        [m.ry, newPos.ry, { duration: speed, at: offset }],
-        [m.rz, newPos.rz, { duration: speed, at: offset }],
-
-        [m.hs, 1, { duration: speed, at: offset + speed * 2 }],
-        [m.py, newPos.py, { duration: speed, at: offset + speed * 2 }],
-      );
+      c.runAnimation(api, {
+        to: [{ ...newPos, py: newPos.py + 3 }, { py: newPos.py }],
+        config: { duration: speed, easing: easings.easeInOutQuad },
+        delay: offset,
+      });
     } else {
-      c.sequence.push(
-        [m.px, newPos.px, { duration: speed, at: offset }],
-        [m.py, newPos.py, { duration: speed, at: offset }],
-        [m.pz, newPos.pz, { duration: speed, at: offset }],
-        [m.rx, newPos.rx, { duration: speed, at: offset }],
-        [m.ry, newPos.ry, { duration: speed, at: offset }],
-        [m.rz, newPos.rz, { duration: speed, at: offset }],
-      );
+      c.runAnimation(api, {
+        ...newPos,
+        config: { duration: speed, easing: easings.easeInOutQuad },
+        delay: offset,
+      });
     }
   }
   for (let i = 0; i < currentHand.length; i++) {
     const card = currentHand[i];
     const nextCard = nextHand.find((c) => c.id === card.id)!;
     const newPos = getCardPositionObj(nextCard, nextSizes);
-    const m = c.cardMVs.get(card.id)!;
+    const api = c.cardApis.get(card.id)!;
 
-    const speed = 0.3;
-    c.sequence.push(
-      [m.px, newPos.px, { duration: speed, at: 0 }],
-      [m.py, newPos.py, { duration: speed, at: 0 }],
-      [m.pz, newPos.pz, { duration: speed, at: 0 }],
-      [m.rx, newPos.rx, { duration: speed, at: 0 }],
-      [m.ry, newPos.ry, { duration: speed, at: 0 }],
-      [m.rz, newPos.rz, { duration: speed, at: 0 }],
-    );
+    const speed = 300;
+
+    c.runAnimation(api, {
+      to: newPos,
+      config: { duration: speed, easing: easings.easeInOutQuad },
+      delay: 0,
+    });
   }
 }
 
 function animateReorderHand(controller: 0 | 1, c: AnimationContext) {
+  const hand = c.currentState.players[controller].field.hand;
   const nextHand = c.nextState.players[controller].field.hand;
   const nextSizes = getPlayerSizes(c.nextState.players[controller]);
 
-  for (const card of nextHand) {
-    const nextCard = nextHand.find((c) => c.id === card.id)!;
+  for (const card of hand) {
+    const nextCard = nextHand.find((c) => c.id === card.id);
+    if (!nextCard) {
+      // card removed
+      continue;
+    }
     const newPos = getCardPositionObj(nextCard, nextSizes);
-    const m = c.cardMVs.get(card.id)!;
+    const api = c.cardApis.get(nextCard.id)!;
 
-    const speed = 0.3;
-    c.sequence.push(
-      [m.px, newPos.px, { duration: speed, at: 0 }],
-      [m.py, newPos.py, { duration: speed, at: 0 }],
-      [m.pz, newPos.pz, { duration: speed, at: 0 }],
-      [m.rx, newPos.rx, { duration: speed, at: 0 }],
-      [m.ry, newPos.ry, { duration: speed, at: 0 }],
-      [m.rz, newPos.rz, { duration: speed, at: 0 }],
-    );
+    const speed = 300;
+    c.runAnimation(api, {
+      to: newPos,
+      config: { duration: speed, easing: easings.easeInOutQuad },
+      delay: 0,
+    });
+  }
+}
+function animateShuffleHand(controller: 0 | 1, c: AnimationContext) {
+  const hand = c.currentState.players[controller].field.hand;
+  const sizes = getPlayerSizes(c.currentState.players[controller]);
+  const nextHand = c.nextState.players[controller].field.hand;
+  const nextSizes = getPlayerSizes(c.nextState.players[controller]);
+
+  const centerPos = getCardPositionObj(
+    { ...nextHand[0], pos: { ...nextHand[0].pos, sequence: 0 } },
+    { ...nextSizes, hand: 1 },
+  );
+
+  for (const nextCard of nextHand) {
+    const sequence = nextCard.pos.sequence;
+    const card = hand.find((c) => c.id === nextCard.id);
+    const pos = getCardPositionObj(card!, sizes);
+    const newPos = getCardPositionObj(nextCard, nextSizes);
+    const api = c.cardApis.get(nextCard.id)!;
+
+    const speed = 300;
+
+    c.runAnimation(api, {
+      from: pos,
+      to: [{ ...centerPos, pz: centerPos.pz + sequence * 0.01 }, newPos],
+      config: { duration: speed, easing: easings.easeInOutQuad },
+      delay: 0,
+    });
   }
 }
 
 function animateMove(event: DuelEventMove, c: AnimationContext) {
-  const m = c.cardMVs.get(event.card.id)!;
-  const speed = 0.5;
-
-  const nextSizes = getPlayerSizes(
-    c.nextState.players[event.nextCard.pos.controller],
-  );
+  const controller = event.nextCard.pos.controller;
+  const nextSizes = getPlayerSizes(c.nextState.players[controller]);
   const newPos = getCardPositionObj(event.nextCard, nextSizes);
+  const api = c.cardApis.get(event.card.id)!;
 
-  c.sequence.push(
-    [m.px, newPos.px, { duration: speed, at: 0 }],
-    [m.rx, newPos.rx, { duration: speed, at: 0 }],
-    [m.ry, newPos.ry, { duration: speed, at: 0 }],
-    [m.rz, newPos.rz, { duration: speed, at: 0 }],
-  );
+  const speed = 300;
+
+  let oanim: ControllerUpdate<ControllerStateOffset> | undefined = undefined;
+  if (
+    isCardPosEqual(event.card.pos, event.nextCard.pos) &&
+    isFaceup(event.card.position) !== isFaceup(event.nextCard.position)
+  ) {
+    oanim = {
+      to: [
+        {
+          py: 1,
+          config: { duration: speed / 2, easing: easings.easeOutQuad },
+          delay: 0,
+        },
+        {
+          py: 0,
+          config: { duration: speed / 2, easing: easings.easeInQuad },
+          delay: speed / 2,
+        },
+      ],
+      delay: 0,
+    };
+  }
 
   if (
     !isFieldNotPileLocation(event.card.pos.location) &&
     isFieldNotPileLocation(event.nextCard.pos.location)
   ) {
-    c.sequence.push(
-      [m.py, newPos.py + 1, { duration: speed, at: 0 }],
-      [m.pz, newPos.pz + 1, { duration: speed, at: 0 }],
-      [m.py, newPos.py, { duration: speed / 2, at: speed }],
-      [m.pz, newPos.pz, { duration: speed / 2, at: speed }],
+    c.runAnimation(
+      api,
+      {
+        to: [
+          { ...newPos, py: newPos.py + 1, pz: newPos.pz + 1 },
+          { py: newPos.py, pz: newPos.pz },
+        ],
+        config: { duration: speed, easing: easings.easeInOutQuad },
+        delay: 0,
+      },
+      oanim,
     );
   } else {
-    c.sequence.push(
-      [m.py, newPos.py, { duration: speed, at: 0 }],
-      [m.pz, newPos.pz, { duration: speed, at: 0 }],
+    c.runAnimation(
+      api,
+      {
+        ...newPos,
+        config: { duration: speed, easing: easings.easeInOutQuad },
+        delay: 0,
+      },
+      oanim,
     );
   }
 }
