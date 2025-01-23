@@ -16,4 +16,13 @@ export default {
       { protocol: "https", hostname: "ms.yugipedia.com" },
     ],
   },
+  outputFileTracingIncludes: {
+    "/api/loadDeck": [
+      "./ignisdata/scripts/*.lua",
+      "./ignisdata/scripts/official/*.lua",
+      "./ignisdata/cdb/cards.lua",
+      "./ignisdata/dist/config/strings.conf",
+      "./ignisdata/delta/strings.conf",
+    ],
+  },
 } satisfies NextConfig;
