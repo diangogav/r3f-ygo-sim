@@ -351,7 +351,7 @@ export function moveCard<State extends Pick<GameState, "players">>(
 export function reorderHand<State extends Pick<GameState, "players">>(
   state: State,
   controller: 0 | 1,
-  cards: number[],
+  codes: number[],
 ): State {
   return {
     ...state,
@@ -362,15 +362,19 @@ export function reorderHand<State extends Pick<GameState, "players">>(
             ...player,
             field: {
               ...player.field,
-              hand: R.pipe(
-                player.field.hand,
-                R.sortBy((c) => cards.indexOf(c.code)),
-                R.map((c, i) => ({ ...c, pos: { ...c.pos, sequence: i } })),
-              ),
+              hand: recalculateSequence(reorderPile(player.field.hand, codes)),
             },
           },
     ),
   };
+}
+
+function reorderPile(pile: CardInfo[], codes: number[]) {
+  pile = Array.from(pile);
+  return codes.flatMap((code) => {
+    const index = pile.findIndex((c) => c.code === code);
+    return pile.splice(index, 1);
+  });
 }
 
 function updateCards(state: EventGameState, cards: PartialCardInfo[]) {
