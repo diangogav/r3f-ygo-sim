@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { useGameStore } from "../state";
 import { textureCardFront } from "../textures";
 
 export interface SelectableCardProps {
@@ -14,10 +15,14 @@ export function SelectableCard({
   onSelect,
   onUnselect,
 }: SelectableCardProps) {
+  const setSelectedCard = useGameStore((s) => s.setSelectedCard);
   return (
     <div
       className="flex-none bg-black relative"
-      onClick={() => (selected ? onUnselect() : onSelect())}
+      onClick={() => {
+        selected ? onUnselect() : onSelect();
+        setSelectedCard({ code });
+      }}
     >
       <img
         className={cn("h-[8cqw] opacity-75", selected && "opacity-100")}

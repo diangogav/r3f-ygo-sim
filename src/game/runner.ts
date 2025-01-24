@@ -71,7 +71,7 @@ export interface CreateGameOptions {
   player2: {
     deck: string;
   };
-  seed: [number, number, number, number];
+  seed: [string, string, string, string];
 }
 
 export async function createGame(
@@ -168,7 +168,7 @@ export async function createGame(
             0,
             ocg.duelQueryCount(duel, 0, OcgLocation.EXTRA),
             "extra",
-          ),
+          ).map((c, i) => ({ ...c, code: deckData.player1.deck.extra[i] })),
           banish: [],
           grave: [],
           extraMonsterZone: [null, null],
@@ -1044,8 +1044,8 @@ function setupPile(
     { length },
     (_, i) =>
       ({
-        code: 0,
         id: crypto.randomUUID(),
+        code: 0,
         pos: { controller, location: loc, sequence: i, overlay: null },
         position: "down_atk",
       }) satisfies CardInfo,

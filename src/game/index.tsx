@@ -67,7 +67,6 @@ import {
   DialogConfigSelectOption,
   DialogConfigSelectUnselect,
   DialogConfigYesNo,
-  getCardInPos,
   isCardPosEqual,
   isDirectInteractionLocation,
   isPileLocation,
@@ -82,6 +81,8 @@ import {
   textureSlot,
 } from "./textures";
 import { DebugMenu } from "./ui/debug";
+import { OverlayCardInfo } from "./ui/overlay-card-info";
+import { OverlayPileList } from "./ui/overlay-pile-list";
 import { SelectableCard } from "./ui/selectable-card";
 import {
   degToRad,
@@ -150,6 +151,11 @@ function Game({ loadGame }: GameProps) {
 
   const onRightClick = useRightClickCancel();
 
+  const onDeselect = useEventCallback(() => {
+    gs().closeShowPile();
+    gs().setSelectedCard(null);
+  });
+
   return (
     <>
       <GameInitializer />
@@ -164,7 +170,8 @@ function Game({ loadGame }: GameProps) {
       >
         <RenderDialog />
         <HtmlTurnState />
-        <OverlaySelectedCard />
+        <OverlayCardInfo />
+        <OverlayPileList />
         <Canvas shadows dpr={[1, 2]}>
           <Suspense>
             <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
@@ -177,11 +184,11 @@ function Game({ loadGame }: GameProps) {
             </group>
             <group
               onClick={() => {
-                gs().setSelectedCard(null);
+                onDeselect();
               }}
               onPointerMissed={(e) => {
-                gs().setSelectedCard(null);
                 e.preventDefault();
+                onDeselect();
                 if (e.button === 2) {
                   onRightClick();
                 }
@@ -211,42 +218,6 @@ function Game({ loadGame }: GameProps) {
       </GameWrapper>
       <DebugMenu />
     </>
-  );
-}
-
-interface OverlaySelectedCardProps {}
-
-function OverlaySelectedCard({}: OverlaySelectedCardProps) {
-  const selectedCard = useGameStore((s) =>
-    s.selectedCard ? getCardInPos(s, s.selectedCard) : null,
-  );
-
-  const cardInfo = useMemo(() => {
-    if (!selectedCard || selectedCard.code <= 0) {
-      return null;
-    }
-    return loadedData.cards.get(selectedCard.code) ?? null;
-  }, [selectedCard]);
-
-  return (
-    cardInfo && (
-      <div className="absolute top-[2cqw] h-[40cqw] left-[2cqw] w-[20cqw] z-20 bg-gray-800 text-white p-[1cqw] text-[1cqw] flex flex-col gap-[1cqw]">
-        <div className="overflow-hidden text-nowrap text-ellipsis flex-none">
-          {cardInfo.name}
-        </div>
-        <div className="flex gap-[1cqw] flex-none">
-          <img className="h-[13cqw]" src={textureCardFront(cardInfo.id)} />
-          <div className="flex flex-col gap-[0.1cqw]">
-            <div>Level {cardInfo.data.level}</div>
-            <div>ATK {cardInfo.data.attack}</div>
-            <div>DEF {cardInfo.data.defense}</div>
-          </div>
-        </div>
-        <div className="text-[0.8cqw] whitespace-pre-wrap overflow-y-auto flex-1">
-          {cardInfo.desc}
-        </div>
-      </div>
-    )
   );
 }
 
@@ -568,7 +539,7 @@ function RenderDialog() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
         >
-          <div className="bg-gray-500 p-[1cqw] text-[1.5cqw] rounded-[1cqw]">
+          <div className="bg-zinc-500 p-[1cqw] text-[1.5cqw] rounded-[1cqw]">
             <div className="text-center text-xs">
               (for player P{dialog.player + 1})
             </div>
@@ -613,7 +584,7 @@ function DialogSelectPosition({
             return (
               <div
                 key={i}
-                className="flex-none bg-gray-600 relative h-[9cqw] w-[9cqw] flex items-center justify-center"
+                className="flex-none bg-zinc-600 relative h-[9cqw] w-[9cqw] flex items-center justify-center"
                 onClick={() => setSelected(selected === pos ? null : pos)}
               >
                 <img
@@ -666,6 +637,7 @@ type DialogSelectUnselectProps = {
 function DialogSelectUnselect({
   dialog: { selects, unselects, canCancel, canFinish },
 }: DialogSelectUnselectProps) {
+  const [selected, setSelected] = useState<number | null>(null);
   return (
     <>
       <div className="w-[30cqw] flex overflow-x-auto justify-center">
@@ -682,16 +654,14 @@ function DialogSelectUnselect({
               }}
             />
           ))}
+          <div className="border-zinc-200 border-r h-full" />
           {selects.map((c, i) => (
             <SelectableCard
               key={i}
               code={c.code}
-              selected={false}
-              onSelect={() => {
-                sendResponse(c.response);
-                runSimulatorStep();
-              }}
-              onUnselect={() => {}}
+              selected={i === selected}
+              onSelect={() => setSelected(i)}
+              onUnselect={() => setSelected(null)}
             />
           ))}
         </div>
@@ -710,6 +680,16 @@ function DialogSelectUnselect({
             {unselects.length > 0 ? "Finish" : "Cancel"}
           </Button>
         )}
+        <Button
+          onClick={() => {
+            if (selected === null) return;
+            sendResponse(selects[selected].response);
+            runSimulatorStep();
+          }}
+          aria-disabled={selected === null}
+        >
+          Select
+        </Button>
       </div>
     </>
   );
@@ -726,7 +706,7 @@ function DialogSelectChain({
   return (
     <>
       {cards.length === 0 ? (
-        <div className="text-gray-800">No effect applicable.</div>
+        <div className="text-zinc-800">No effect applicable.</div>
       ) : (
         <div className="w-[30cqw] flex overflow-x-auto justify-center">
           <div className="flex items-center justify-start gap-[1cqw] py-[1cqw]">
@@ -920,7 +900,7 @@ function DialogSelectCard({
   );
 }
 
-const Button = twc.button`py-[0.5cqw] px-[1cqw] rounded-[1cqw] bg-gray-800 text-white hover:bg-gray-700 aria-disabled:bg-gray-600 aria-disabled:pointer-events-none`;
+const Button = twc.button`py-[0.5cqw] px-[1cqw] rounded-[1cqw] bg-zinc-800 text-white hover:bg-zinc-700 aria-disabled:bg-zinc-600 aria-disabled:pointer-events-none`;
 
 type DialogSelectYesNoProps = {
   dialog: DialogConfigYesNo | DialogConfigEffectYesNo;
@@ -958,7 +938,7 @@ function RenderCard({
   cardMotionValuesRef,
 }: RenderCardProps) {
   let {
-    pos: { location, sequence },
+    pos: { controller, location, sequence },
   } = card;
 
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
@@ -989,13 +969,16 @@ function RenderCard({
     updateHover(false);
   });
 
-  const onClick = useEventCallback((e: ThreeEvent<MouseEvent>) => {
-    setSelectedCard(card.pos);
-    e.stopPropagation();
-  });
-
   const isTop = isPileTop(location, sequence, sizes);
   const isInteractive = isDirectInteractionLocation(location) || isTop;
+
+  const onClick = useEventCallback((e: ThreeEvent<MouseEvent>) => {
+    setSelectedCard({ pos: card.pos, code: card.code });
+    if (isTop && location !== "deck") {
+      gs().setShowPile(controller, location);
+    }
+    e.stopPropagation();
+  });
 
   return (
     <AnimatedObject3D
@@ -1046,7 +1029,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
   const sizes = useControllerSizes(card.pos.controller);
 
   const selected =
-    idle && selectedCard && isCardPosEqual(card.pos, selectedCard);
+    idle && selectedCard?.pos && isCardPosEqual(card.pos, selectedCard.pos);
 
   const matchingActions = useMemo(() => {
     if (location === "hand" || !isPileLocation(location)) {
@@ -1092,7 +1075,7 @@ function RenderCardActions({ card, wrapperRef }: RenderCardActionsProps) {
             <div className="bg-black text-white rounded-md overflow-hidden">
               {matchingActions.map((c, i) => (
                 <div
-                  className="px-[1cqw] hover:bg-gray-700 cursor-pointer"
+                  className="px-[1cqw] hover:bg-zinc-700 cursor-pointer"
                   key={i}
                   onClick={() => {
                     if ("actions" in c) {
@@ -1327,7 +1310,7 @@ function GameWrapper({ className, ...props }: GameWrapperProps) {
   return (
     <div
       className={cn(
-        "relative bg-gray-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container",
+        "relative bg-zinc-700 aspect-video w-full m-auto horizontal:h-full horizontal:w-auto @container",
         className,
       )}
       {...props}

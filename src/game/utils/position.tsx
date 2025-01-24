@@ -259,7 +259,8 @@ export function useHandOffset(card: CardInfo) {
   const [hover, updateHover] = useState(false);
   const isHover = idle && hover;
 
-  const selected = selectedCard && isCardPosEqual(selectedCard, card.pos);
+  const selected =
+    selectedCard?.pos && isCardPosEqual(selectedCard.pos, card.pos);
 
   let hy = 0;
   let hz = 0;

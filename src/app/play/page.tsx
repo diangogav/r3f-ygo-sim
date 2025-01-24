@@ -7,7 +7,7 @@ export default async function PagePlay({ searchParams }: NextPageProps) {
       d: schemaJsonString.pipe(
         z.object({
           decks: z.tuple([z.string(), z.string()]),
-          seed: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+          seed: z.tuple([z.string(), z.string(), z.string(), z.string()]),
         }),
       ),
     })

@@ -1,17 +1,28 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { twc } from "react-twc";
 
 export function CreateForm({}: {}) {
   const router = useRouter();
-  const { register, handleSubmit } = useForm({
-    defaultValues: {
+
+  const [defaultValues] = useState(() => {
+    const arr = crypto.getRandomValues(new Uint8Array(8 * 4));
+    const arrView = new DataView(arr.buffer, 0, arr.byteLength);
+    return {
       decks: ["", ""],
-      seed: [1238828193, 223912, 144449391, 34443123],
-    },
+      seed: [
+        arrView.getBigUint64(0 * 4).toString(),
+        arrView.getBigUint64(1 * 4).toString(),
+        arrView.getBigUint64(2 * 4).toString(),
+        arrView.getBigUint64(3 * 4).toString(),
+      ],
+    };
   });
+
+  const { register, handleSubmit } = useForm({ defaultValues });
 
   return (
     <form
@@ -43,25 +54,25 @@ export function CreateForm({}: {}) {
         <Label>Seed</Label>
         <div className="flex gap-1">
           <Input
-            {...register("seed.0", { valueAsNumber: true })}
+            {...register("seed.0", { validate: (s) => !!s.match(/^\d+$/) })}
             className="flex-1"
             type="text"
             placeholder="12345"
           />
           <Input
-            {...register("seed.1", { valueAsNumber: true })}
+            {...register("seed.1", { validate: (s) => !!s.match(/^\d+$/) })}
             className="flex-1"
             type="text"
             placeholder="12345"
           />
           <Input
-            {...register("seed.2", { valueAsNumber: true })}
+            {...register("seed.2", { validate: (s) => !!s.match(/^\d+$/) })}
             className="flex-1"
             type="text"
             placeholder="12345"
           />
           <Input
-            {...register("seed.3", { valueAsNumber: true })}
+            {...register("seed.3", { validate: (s) => !!s.match(/^\d+$/) })}
             className="flex-1"
             type="text"
             placeholder="12345"

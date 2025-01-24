@@ -13,7 +13,11 @@ export interface GameState {
   turnPlayer: 0 | 1;
   phase: GameStatePhases;
 
-  selectedCard: CardPos | null;
+  selectedCard: { pos?: CardPos; code?: number } | null;
+  showPile: {
+    controller: 0 | 1;
+    location: "grave" | "extra" | "banish";
+  } | null;
   selectField: { positions: CardFieldPos[]; count: number } | null;
   events: DuelEventEntry[];
   actions: CardAction[];
@@ -239,8 +243,8 @@ export const useGameStore = create(
       turnPlayer: 0,
       phase: "dp",
 
+      showPile: null,
       selectedCard: null,
-      selectedHandCard: null,
       actions: [],
       selectField: null,
       events: [],
@@ -284,8 +288,14 @@ export const useGameStore = create(
       setActions(actions: CardAction[]) {
         set(() => ({ actions }));
       },
-      setSelectedCard(card: CardPos | null) {
+      setSelectedCard(card: { pos?: CardPos; code?: number } | null) {
         set(() => ({ selectedCard: card }));
+      },
+      setShowPile(controller: 0 | 1, location: "grave" | "extra" | "banish") {
+        set(() => ({ showPile: { controller, location } }));
+      },
+      closeShowPile() {
+        set(() => ({ showPile: null }));
       },
       setFieldSelect(
         options: { positions: CardFieldPos[]; count: number } | null,
@@ -432,7 +442,7 @@ export function isPileTop(
   location: CardLocation,
   sequence: number,
   sizes: ControllerSizes,
-) {
+): location is "deck" | "grave" | "banish" | "extra" {
   switch (location) {
     case "deck":
       return sequence === 0;
