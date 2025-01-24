@@ -24,6 +24,7 @@ import createCore, {
   ocgMessageTypeStrings,
   ocgPositionParse,
 } from "ocgcore-wasm";
+import * as R from "remeda";
 import { arrayShuffle } from "../lib/array-shuffle";
 import { xoshiro256ss } from "../lib/xoshiro256ss";
 import {
@@ -51,6 +52,7 @@ const libPromise = initializeCore();
 
 // TODO: expose inside the state maybe?
 
+export let gameInstance: OcgDuelHandle | null = null;
 export const loadedData = {
   cards: new Map<number, LoadDeckResponseCard>(),
   scripts: new Map<string, string>(),
@@ -62,13 +64,28 @@ export const loadedData = {
   },
 };
 
-export async function createGame(signal?: AbortSignal) {
+export interface CreateGameOptions {
+  player1: {
+    deck: string;
+  };
+  player2: {
+    deck: string;
+  };
+  seed: [number, number, number, number];
+}
+
+export async function createGame(
+  options: CreateGameOptions,
+  signal?: AbortSignal,
+) {
+  gameInstance = null;
+
   const [deckData] = await Promise.all([
     fetch(`/api/loadDeck`, {
       method: "post",
       body: JSON.stringify({
-        player1: { deck: testDeck },
-        player2: { deck: testDeck },
+        player1: { deck: options.player1.deck },
+        player2: { deck: options.player2.deck },
       }),
       headers: { "content-type": "application/json" },
       signal,
@@ -91,12 +108,7 @@ export async function createGame(signal?: AbortSignal) {
     victory: new Map(deckData.strings.victory),
   };
 
-  const seed: [bigint, bigint, bigint, bigint] = [
-    1238828193n,
-    223912n,
-    144449391n,
-    34443414123n,
-  ];
+  const seed = R.map(options.seed, BigInt);
   const duel = ocg.createDuel({
     cardReader(card) {
       const data = loadedData.cards.get(card)?.data;
@@ -142,6 +154,7 @@ export async function createGame(signal?: AbortSignal) {
   loadPile(duel, 1, OcgLocation.EXTRA, deckData.player2.deck.extra);
 
   useGameStore.setState({
+    ...useGameStore.getInitialState(),
     players: [
       {
         lp: 8000,
@@ -390,7 +403,7 @@ export function runSimulatorStep() {
 
   gs().appendDuelLog(...messages);
 
-  for (const [index, m] of messages.entries()) {
+  for (const [_index, m] of messages.entries()) {
     switch (m.type) {
       case OcgMessageType.START: {
         break;
@@ -1052,9 +1065,3 @@ async function initializeCore() {
   const [maj, min] = ocg.getVersion();
   console.log(`core initialized (v${maj}.${min})`);
 }
-
-const testDeck = `ydke://thw3ALYcNwC2HDcAcRtTAk/aVAAdUbwFbGahAWxmoQFsZqEBKnO4Ad+EuwDfhLsA34S7AFYrJgRWKyYEGB+iAhgfogJErfADRK3wA51tNwGaV4QFmleEBZpXhAU/DRoCfTpSAj8NGgI/DRoCfTpSAn06UgLfFXsC3xV7Am++MQSAqRQEVismBICpFATvghYA74IWAO+CFgDFqdoEWXtjBA==!tLYsAydapAEw9fkBzrvlAfDB9gKkmisAMqZvAeR3jAOzzOYF7WsVBcw7QQSfkGoA0htBAZa6cwHhhSIF!!`;
-
-export let gameInstance: OcgDuelHandle | null = null;
-export const gameInstancePromise =
-  typeof window === "undefined" ? Promise.resolve(undefined!) : createGame();

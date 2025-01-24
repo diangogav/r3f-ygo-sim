@@ -10,8 +10,9 @@ import {
 } from "@react-three/drei";
 import { Canvas, extend, ThreeElements, ThreeEvent } from "@react-three/fiber";
 import { Bloom, EffectComposer, Vignette } from "@react-three/postprocessing";
+import { useQuery } from "@tanstack/react-query";
 import { animate, AnimatePresence, motion } from "framer-motion";
-import { OcgPosition, OcgResponseType } from "ocgcore-wasm";
+import { OcgDuelHandle, OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
   ComponentPropsWithRef,
@@ -44,8 +45,8 @@ import { useShallow } from "zustand/react/shallow";
 import { cn } from "../lib/cn";
 import { CardAnimationRef, CardAnimations } from "./animations";
 import {
+  createGame,
   egs,
-  gameInstancePromise,
   gs,
   loadedData,
   runSimulatorStep,
@@ -91,8 +92,6 @@ import {
   useHandOffset,
 } from "./utils/position";
 
-const load = gameInstancePromise;
-
 extend({
   Group,
   PointLight,
@@ -104,7 +103,32 @@ extend({
   Mesh,
 });
 
-export function Game() {
+export interface GameLoaderProps {
+  options: Parameters<typeof createGame>[0];
+}
+
+export function GameLoader({ options }: GameLoaderProps) {
+  const { promise: loadGame } = useQuery({
+    queryKey: ["game", options],
+    queryFn: ({ signal }) => createGame(options, signal),
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+
+  return (
+    <Suspense fallback="Loading...">
+      <Game loadGame={loadGame} />
+    </Suspense>
+  );
+}
+
+interface GameProps {
+  loadGame: Promise<OcgDuelHandle | null>;
+}
+
+function Game({ loadGame }: GameProps) {
+  use(loadGame);
+
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   const cardMotionValuesRef = useRef<Map<string, CardAnimationRef>>(null!);
@@ -442,9 +466,9 @@ export function Model(props: ThreeElements["group"]) {
 
 useGLTF.preload("/models/table/scene.gltf");
 
-function GameInitializer({}: {}) {
-  use(load);
+interface GameInitializerProps {}
 
+function GameInitializer({}: GameInitializerProps) {
   const [initPhase, setInitPhase] = useState<0 | 1 | 2>(0);
   const isLoading = useProgress((p) => p.active);
 
