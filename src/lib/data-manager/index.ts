@@ -1,7 +1,7 @@
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { CardData, CardsDatabase, loadCardsDatabase } from "./cards-database";
 import { createScriptsCache } from "./scripts";
-import { readFile } from "fs/promises";
 
 const scriptsDataPath = `./ignisdata/scripts`;
 const cdbDataPath = `./ignisdata/cdb`;
@@ -23,7 +23,7 @@ const scriptsCache = createScriptsCache(scriptsDataPath);
 const cardsCache = new Map<number, CardData>();
 
 export async function getCards(
-  cardCodes: number[]
+  cardCodes: number[],
 ): Promise<[CardData[], Map<string, string>]> {
   const cards = await (async () => {
     const cards: CardData[] = [];
@@ -52,10 +52,116 @@ export async function getCards(
         const path = `c${card.data.alias || card.id}.lua`;
         const script = await scriptsCache.get(`official/${path}`);
         return [path, script] as const;
-      })
-    )
+      }),
+    ),
   );
   return [cards, scripts];
+}
+
+const promiseScriptConstants = (async () => {
+  return {
+    ...parseScriptAssignments(
+      await scriptsCache.get(`card_counter_constants.lua`),
+    ),
+    ...parseScriptAssignments(
+      await scriptsCache.get(`archetype_setcode_constants.lua`),
+    ),
+  };
+})();
+
+export async function getAllReferencedCards(context: {
+  cards: Map<number, CardData>;
+  scripts: Map<string, string>;
+}) {
+  const db = await getCardsDatabaseCached("cards");
+
+  const set = new Set<number>();
+
+  const addToSet = async (id: number) => {
+    for (const card of await getReferencedCards(id)) {
+      if (typeof card === "number" && !context.cards.has(card)) {
+        const dbCard = await db.getCard(card);
+        if (dbCard) {
+          context.cards.set(card, dbCard);
+          set.add(card);
+        }
+        const scriptPath = `official/c${card}.lua`;
+        if (context.scripts.has(scriptPath)) {
+          const script = await scriptsCache.get(scriptPath);
+          if (script) {
+            context.scripts.set(scriptPath, script);
+          }
+        }
+      }
+    }
+  };
+
+  for (const [id] of context.cards.entries()) {
+    await addToSet(id);
+  }
+
+  while (set.size > 0) {
+    const setCopy = [...set.keys()];
+    set.clear();
+    for (const k of setCopy) {
+      await addToSet(k);
+    }
+  }
+}
+
+async function getReferencedCards(code: number) {
+  const script = await scriptsCache.get(`official/c${code}.lua`);
+  if (!script) {
+    return [];
+  }
+
+  let constants = {
+    ...(await promiseScriptConstants),
+    id: code,
+  };
+  constants = {
+    ...constants,
+    ...parseScriptAssignments(script, constants),
+  };
+
+  const referencedCards = [
+    ...(script
+      .match(/\.listed_names=\{(.*?)\}/)
+      ?.at(1)
+      ?.split(/\,/g) ?? []),
+    ...(script
+      .match(/\.fit_monster=\{(.*?)\}/)
+      ?.at(1)
+      ?.split(/\,/g) ?? []),
+  ];
+
+  return referencedCards.map((c) => resolveConstant(c, constants));
+}
+
+function resolveConstant(text: string, context: Record<string, any>) {
+  try {
+    text = text.replace(/\{/g, "[").replace(/\}/g, "]");
+    const entries = Object.entries(context);
+    return new Function(...entries.map((e) => e[0]), `return ${text}`).apply(
+      null,
+      entries.map((e) => e[1]),
+    );
+  } catch (e) {
+    console.log("failed to parse ", text);
+    return text;
+  }
+}
+
+function parseScriptAssignments(
+  script: string,
+  context: Record<string, any> = {},
+) {
+  return Object.fromEntries(
+    [...script.matchAll(/^(\w+)\s*=\s*(.*?)\s*(--.*)?$/gm)].map((c) => [
+      c[1],
+      resolveConstant(c[2], context),
+    ]),
+  );
 }
 
 export const preloadedBaseScripts = scriptsCache.loadBaseScripts();

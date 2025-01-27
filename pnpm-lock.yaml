@@ -14,6 +14,9 @@ importers:
       '@react-spring/three':
         specifier: ^9.7.5
         version: 9.7.5(@react-three/fiber@9.0.0-rc.4(@types/react@19.0.7)(immer@10.1.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(three@0.172.0))(react@19.0.0)(three@0.172.0)
+      '@react-spring/web':
+        specifier: ^9.7.5
+        version: 9.7.5(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       '@react-three/drei':
         specifier: 10.0.0-rc.0
         version: 10.0.0-rc.0(@react-three/fiber@9.0.0-rc.4(@types/react@19.0.7)(immer@10.1.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(three@0.172.0))(@types/react@19.0.7)(@types/three@0.172.0)(immer@10.1.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(three@0.172.0)
@@ -63,8 +66,8 @@ importers:
         specifier: ^15.1.6
         version: 15.1.6(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       ocgcore-wasm:
-        specifier: ^0.0.33
-        version: 0.0.33
+        specifier: ^0.0.34
+        version: 0.0.34
       postcss:
         specifier: ^8.5.1
         version: 8.5.1
@@ -431,6 +434,12 @@ packages:
 
   '@react-spring/types@9.7.5':
     resolution: {integrity: sha512-HVj7LrZ4ReHWBimBvu2SKND3cDVUPWKLqRTmWe/fNY6o1owGOX0cAHbdPDTMelgBlVbrTKrre6lFkhqGZErK/g==}
+
+  '@react-spring/web@9.7.5':
+    resolution: {integrity: sha512-lmvqGwpe+CSttsWNZVr+Dg62adtKhauGwLyGE/RRyZ8AAMLgb9x3NDMA5RMElXo+IMyTkPp7nxTB8ZQlmhb6JQ==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0
 
   '@react-three/drei@10.0.0-rc.0':
     resolution: {integrity: sha512-3sBzZf9OS+hoazxi9hPSwuS3ysoPG4y3vJf0heepab35ddXsC639kDfSo8mdYspKMv7z6HgL2nLrKTFAYQ0ZZA==}
@@ -1063,8 +1072,8 @@ packages:
     resolution: {integrity: sha512-RSn9F68PjH9HqtltsSnqYC1XXoWe9Bju5+213R98cNGttag9q9yAOTzdbsqvIa7aNm5WffBZFpWYr2aWrklWAw==}
     engines: {node: '>= 6'}
 
-  ocgcore-wasm@0.0.33:
-    resolution: {integrity: sha512-oWgChIvnHwYy0eq3pP7YR7KAlFGUPNerD6brnTFukAjh8aTtXk9DzwgQF5uc/yS9B8yqNSJalD6O/AQ6N45gbw==}
+  ocgcore-wasm@0.0.34:
+    resolution: {integrity: sha512-NN43CYakaV01zKSu3UAF4XE4gCq6uG2xW1vnFOdzLjHWo5bsxSPEjbeP1O2avRMNFxuytCE/iPeH3bckIbIgrQ==}
 
   package-json-from-dist@1.0.1:
     resolution: {integrity: sha512-UEZIS3/by4OC8vL3P2dTXRETpebLI2NiI5vIrjaD/5UtrkFX/tNbwjTSRAGC/+7CAo2pIcBaRgWmcBBHcsaCIw==}
@@ -1753,6 +1762,15 @@ snapshots:
 
   '@react-spring/types@9.7.5': {}
 
+  '@react-spring/web@9.7.5(react-dom@19.0.0(react@19.0.0))(react@19.0.0)':
+    dependencies:
+      '@react-spring/animated': 9.7.5(react@19.0.0)
+      '@react-spring/core': 9.7.5(react@19.0.0)
+      '@react-spring/shared': 9.7.5(react@19.0.0)
+      '@react-spring/types': 9.7.5
+      react: 19.0.0
+      react-dom: 19.0.0(react@19.0.0)
+
   '@react-three/drei@10.0.0-rc.0(@react-three/fiber@9.0.0-rc.4(@types/react@19.0.7)(immer@10.1.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(three@0.172.0))(@types/react@19.0.7)(@types/three@0.172.0)(immer@10.1.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(three@0.172.0)':
     dependencies:
       '@babel/runtime': 7.26.0
@@ -2284,7 +2302,7 @@ snapshots:
 
   object-hash@3.0.0: {}
 
-  ocgcore-wasm@0.0.33: {}
+  ocgcore-wasm@0.0.34: {}
 
   package-json-from-dist@1.0.1: {}
 

@@ -312,6 +312,24 @@ export const useGameStore = create(
   ),
 );
 
+export function useGameEventOfType<T extends DuelEvent["type"]>(
+  type: T,
+  cond?: (event: DuelEvent & { type: T }) => boolean,
+) {
+  return useGameStore((s) => {
+    const currentEvent = s.events.at(0);
+    if (currentEvent?.event.type === type) {
+      const e = currentEvent as Omit<DuelEventEntry, "event"> & {
+        event: DuelEvent & { type: T };
+      };
+      if (!cond || cond?.(e.event)) {
+        return e;
+      }
+    }
+    return null;
+  });
+}
+
 export function extractEventGS({
   players,
   turn,

@@ -1,4 +1,5 @@
 import {
+  getAllReferencedCards,
   getCards,
   preloadedBaseScripts,
   preloadedStrings,
@@ -35,11 +36,14 @@ export async function POST(req: NextRequest) {
     ...deck2.side,
   ]);
 
-  const [[cards, cardScripts], scripts, strings] = await Promise.all([
+  const [[cardsList, cardScripts], scripts, strings] = await Promise.all([
     getCards([...cardsSet.values()]),
     preloadedBaseScripts,
     preloadedStrings,
   ]);
+
+  const cards = new Map<number, CardData>(cardsList.map((c) => [c.id, c]));
+  await getAllReferencedCards({ cards, scripts });
 
   return NextResponse.json({
     player1: {
@@ -56,7 +60,7 @@ export async function POST(req: NextRequest) {
         side: [...deck2.side],
       },
     },
-    cards: cards.map((c) => ({
+    cards: Array.from(cards.values(), (c) => ({
       ...c,
       data: { ...c.data, race: c.data.race.toString() },
     })),

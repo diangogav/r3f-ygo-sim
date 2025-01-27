@@ -1,6 +1,13 @@
 "use client";
 
-import { animated, easings, to, useSpring } from "@react-spring/three";
+import {
+  animated,
+  easings,
+  SpringValue,
+  to,
+  useSpring,
+  useTransition,
+} from "@react-spring/three";
 import {
   Html,
   PerspectiveCamera,
@@ -71,6 +78,7 @@ import {
   isDirectInteractionLocation,
   isPileLocation,
   isPileTop,
+  useGameEventOfType,
   useGameStore,
 } from "./state";
 import {
@@ -83,6 +91,7 @@ import {
 import { DebugMenu } from "./ui/debug";
 import { OverlayCardInfo } from "./ui/overlay-card-info";
 import { OverlayPileList } from "./ui/overlay-pile-list";
+import { OverlayPlayerStats } from "./ui/overlay-player-stats";
 import { SelectableCard } from "./ui/selectable-card";
 import {
   degToRad,
@@ -172,6 +181,8 @@ function Game({ loadGame }: GameProps) {
         <HtmlTurnState />
         <OverlayCardInfo />
         <OverlayPileList />
+        <OverlayPlayerStats controller={0} />
+        <OverlayPlayerStats controller={1} />
         <Canvas shadows dpr={[1, 2]}>
           <Suspense>
             <PerspectiveCamera makeDefault fov={70} position={[0, -2, 16]} />
@@ -227,20 +238,51 @@ interface GameCardsProps {
 }
 
 function GameCards({ wrapperRef, cardMotionValuesRef }: GameCardsProps) {
+  const removeCard = useGameEventOfType("removeCard");
+  const newCard = useGameEventOfType("newCard");
+
   const allCards = useAllCards();
 
-  return (
-    <>
-      {allCards.map((card) => (
-        <RenderCard
-          key={card.id}
-          wrapperRef={wrapperRef}
-          card={card}
-          cardMotionValuesRef={cardMotionValuesRef}
-        />
-      ))}
-    </>
+  const transitions = useTransition(
+    [
+      ...allCards.filter((c) => c.id !== removeCard?.event.card.id),
+      ...(newCard?.event.card ? [newCard.event.card] : []),
+    ],
+    {
+      from: { opacity: 0 },
+      enter: { opacity: 1 },
+      leave: { opacity: 0 },
+      keys: (item) => item.id,
+      onRest(result, ctrl, item) {
+        if (result.value.opacity === 1) {
+          // enter
+          if (item.id === newCard?.event.card.id) {
+            gs().nextEvent();
+            console.log("NEWCARD NEXT EVENT", result, ctrl);
+          }
+        }
+        if (result.value.opacity === 0) {
+          // leave
+          if (item.id === removeCard?.event.card.id) {
+            gs().nextEvent();
+            console.log("REMOVE CARD NEXT EVENT", result, ctrl);
+          }
+        }
+      },
+      config: {
+        duration: 200,
+      },
+    },
   );
+
+  return transitions((styles, card) => (
+    <RenderCard
+      opacity={styles.opacity}
+      wrapperRef={wrapperRef}
+      card={card}
+      cardMotionValuesRef={cardMotionValuesRef}
+    />
+  ));
 }
 
 function ChainLinkIndicators() {
@@ -927,12 +969,14 @@ function DialogSelectYesNo({ dialog: { type } }: DialogSelectYesNoProps) {
 }
 
 interface RenderCardProps {
+  opacity: SpringValue<number>;
   card: CardInfo;
   wrapperRef: Ref<HTMLDivElement>;
   cardMotionValuesRef: RefObject<Map<string, CardAnimationRef>>;
 }
 
 function RenderCard({
+  opacity,
   card,
   wrapperRef,
   cardMotionValuesRef,
@@ -992,6 +1036,7 @@ function RenderCard({
       scale-y={scale}
     >
       <RenderCardFront
+        opacity={opacity}
         code={card.code}
         hover={hover}
         onPointerOver={isInteractive ? onPointerOver : undefined}
@@ -999,6 +1044,7 @@ function RenderCard({
         onClick={isInteractive ? onClick : undefined}
       />
       <RenderCardBack
+        opacity={opacity}
         hover={hover}
         onPointerOver={isInteractive ? onPointerOver : undefined}
         onPointerOut={isInteractive ? onPointerOut : undefined}
@@ -1111,31 +1157,43 @@ const cardScale = 2.5;
 const cardRatio = 271 / 395;
 
 interface RenderCardFrontProps extends ComponentProps<"mesh"> {
+  opacity: SpringValue<number>;
   hover?: boolean;
   code: number;
 }
 
 const RenderCardFront = memo(
-  ({ hover, code, ...props }: RenderCardFrontProps) => {
+  ({ opacity, hover, code, ...props }: RenderCardFrontProps) => {
+    const transparent = opacity.to((v) => v < 1);
+
     return (
       <mesh {...props}>
         {code > 0 ? (
           <Suspense
             fallback={
-              <meshStandardMaterial
+              <AnimatedMeshStandardMaterial
                 color={Color.NAMES.grey}
                 metalness={0}
                 roughness={0.5}
+                opacity={opacity}
+                transparent={transparent}
               />
             }
           >
-            <CardTextureMaterial hover={hover} code={code} />
+            <CardTextureMaterial
+              hover={hover}
+              code={code}
+              opacity={opacity}
+              transparent={transparent}
+            />
           </Suspense>
         ) : (
-          <meshStandardMaterial
+          <AnimatedMeshStandardMaterial
             color={Color.NAMES.grey}
             metalness={0}
             roughness={0.5}
+            opacity={opacity}
+            transparent={transparent}
           />
         )}
         <planeGeometry args={[cardScale * cardRatio, cardScale, 1]} />
@@ -1146,13 +1204,14 @@ const RenderCardFront = memo(
 
 RenderCardFront.displayName = "RenderCardFront";
 
-type CardTextureMaterialProps = {
+interface CardTextureMaterialProps
+  extends ComponentProps<typeof AnimatedMeshStandardMaterial> {
   hover?: boolean;
   code: number;
-};
+}
 
 const CardTextureMaterial = memo(
-  ({ hover, code }: CardTextureMaterialProps) => {
+  ({ hover, code, ...props }: CardTextureMaterialProps) => {
     const frontTexture = useTexture(textureCardFront(code));
 
     const springs = useSpring({
@@ -1166,6 +1225,7 @@ const CardTextureMaterial = memo(
         roughness={0.5}
         emissive={0xffffff}
         emissiveIntensity={springs.emissiveIntensity}
+        {...props}
       />
     );
   },
@@ -1176,35 +1236,45 @@ const AnimatedMeshStandardMaterial = animated("meshStandardMaterial");
 CardTextureMaterial.displayName = "CardTextureMaterial";
 
 interface RenderCardBackProps extends ComponentProps<"mesh"> {
+  opacity: SpringValue<number>;
   hover?: boolean;
 }
 
-const RenderCardBack = memo(({ hover, ...props }: RenderCardBackProps) => {
-  return (
-    <mesh rotation={[0, 180 * degToRad, 0]} {...props}>
-      <Suspense
-        fallback={
-          <meshStandardMaterial
-            color={Color.NAMES.brown}
-            metalness={0}
-            roughness={0.5}
+const RenderCardBack = memo(
+  ({ opacity, hover, ...props }: RenderCardBackProps) => {
+    const transparent = opacity.to((v) => v < 1);
+
+    return (
+      <mesh rotation={[0, 180 * degToRad, 0]} {...props}>
+        <Suspense
+          fallback={
+            <meshStandardMaterial
+              color={Color.NAMES.brown}
+              metalness={0}
+              roughness={0.5}
+            />
+          }
+        >
+          <CardBackMaterial
+            hover={hover}
+            opacity={opacity}
+            transparent={transparent}
           />
-        }
-      >
-        <CardBackMaterial hover={hover} />
-      </Suspense>
-      <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
-    </mesh>
-  );
-});
+        </Suspense>
+        <planeGeometry args={[(cardScale * 271) / 395, cardScale, 1]} />
+      </mesh>
+    );
+  },
+);
 
 RenderCardBack.displayName = "RenderCardBack";
 
-interface CardBackMaterialProps {
+interface CardBackMaterialProps
+  extends ComponentProps<typeof AnimatedMeshStandardMaterial> {
   hover?: boolean;
 }
 
-const CardBackMaterial = memo(({ hover }: CardBackMaterialProps) => {
+const CardBackMaterial = memo(({ hover, ...props }: CardBackMaterialProps) => {
   const backTexture = useTexture(textureCardBack);
 
   const springs = useSpring({
@@ -1218,6 +1288,7 @@ const CardBackMaterial = memo(({ hover }: CardBackMaterialProps) => {
       roughness={0.5}
       emissive={0xffffff}
       emissiveIntensity={springs.emissiveIntensity}
+      {...props}
     />
   );
 });

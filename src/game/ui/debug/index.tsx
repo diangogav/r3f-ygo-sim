@@ -12,7 +12,7 @@ export function DebugMenu() {
   return (
     <div
       className={cn(
-        "absolute top-4 right-4 flex flex-col gap-2 items-end",
+        "absolute top-4 right-4 flex flex-col gap-2 items-end z-50",
         view !== null && "bottom-4",
       )}
     >

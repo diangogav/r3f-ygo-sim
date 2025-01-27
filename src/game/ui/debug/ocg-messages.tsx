@@ -199,6 +199,13 @@ function messageContent(m: OcgMessage) {
         </>
       );
     }
+    case OcgMessageType.DAMAGE: {
+      return (
+        <div>
+          {m.amount} to P{m.player + 1}
+        </div>
+      );
+    }
     case OcgMessageType.SHUFFLE_DECK: {
       return <div>Player: P{m.player + 1}</div>;
     }
@@ -246,6 +253,12 @@ function messageContent(m: OcgMessage) {
           </div>
         </>
       );
+    }
+    case OcgMessageType.SPSUMMONED: {
+      return null;
+    }
+    case OcgMessageType.SUMMONED: {
+      return null;
     }
     case OcgMessageType.CHAIN_END: {
       return null;
@@ -376,13 +389,13 @@ function cardLocation({
     parts.push(`p${controller + 1}`);
   }
   if (location !== undefined) {
-    parts.push(ocgLocationString.get(location));
+    parts.push(ocgLocationString.get(location) ?? `${location}`);
   }
   if (sequence !== undefined) {
     parts.push(`#${sequence}`);
   }
   if (position !== undefined) {
-    parts.push(ocgPositionString.get(position));
+    parts.push(ocgPositionString.get(position) ?? `${position}`);
   }
   if (overlay_sequence !== undefined) {
     parts.push(`$${overlay_sequence}`);

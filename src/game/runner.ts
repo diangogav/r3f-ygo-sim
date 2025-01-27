@@ -113,6 +113,7 @@ export async function createGame(
     cardReader(card) {
       const data = loadedData.cards.get(card)?.data;
       if (!data) {
+        console.log("missing data", card);
         return null;
       }
       return {
@@ -121,7 +122,12 @@ export async function createGame(
       };
     },
     scriptReader(name) {
-      return loadedData.scripts.get(name) ?? "";
+      const script = loadedData.scripts.get(name);
+      if (!script) {
+        console.log("missing script", name);
+        return "";
+      }
+      return script;
     },
     errorHandler(type, text) {
       console.log(ocgLogTypeString.get(type), text);
@@ -614,22 +620,59 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.MOVE: {
-        const source = convertLocation(m.from)!;
-        const dest = convertLocation(m.to)!;
+        const source = convertLocation(m.from);
+        const dest = convertLocation(m.to);
         const position = convertPosition(m.to.position)!;
-        const code = dest.location === "deck" ? 0 : m.card;
 
-        const card = getCardInPos(egs(), source)!;
+        const code = dest?.location === "deck" ? 0 : m.card;
+
+        const card = source ? getCardInPos(egs(), source) : null;
+
+        if (!card) {
+          if (!dest) {
+            // maybe shouldn't happen
+            console.warn("werid move: ", m);
+            break;
+          }
+
+          // new card
+          const nextState = setCard(
+            egs(),
+            { id: crypto.randomUUID(), code, position, pos: dest },
+            dest,
+          );
+          const nextCard = getCardInPos(nextState, dest)!;
+          gs().queueEvent({
+            event: { type: "newCard", card: nextCard },
+            nextState,
+          });
+          break;
+        }
 
         if (code) {
           preloadTexture(code);
           gs().updateCards([{ id: card.id, code }]);
         }
 
-        const nextState = moveCard(egs(), { ...card, code, position }, dest);
-        const nextCard = getCardInPos(nextState, dest)!;
+        if (dest) {
+          const nextState = moveCard(egs(), { ...card, code, position }, dest);
+          const nextCard = getCardInPos(nextState, dest)!;
+          gs().queueEvent({
+            event: { type: "move", card, nextCard },
+            nextState,
+          });
+          break;
+        }
+
+        if (!card) {
+          // maybe shouldn't happen
+          console.warn("werid move: ", m);
+          break;
+        }
+        // remove card
+        const nextState = setCard(egs(), null, source!);
         gs().queueEvent({
-          event: { type: "move", card, nextCard },
+          event: { type: "removeCard", card },
           nextState,
         });
         break;
@@ -701,6 +744,9 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.SUMMONED: {
+        break;
+      }
+      case OcgMessageType.SPSUMMONED: {
         break;
       }
       case OcgMessageType.CHAINING: {
@@ -919,6 +965,21 @@ export function runSimulatorStep() {
         break;
       }
       case OcgMessageType.CONFIRM_CARDS: {
+        break;
+      }
+      case OcgMessageType.DAMAGE: {
+        const player = m.player as 0 | 1;
+        const nextState = {
+          ...egs(),
+          players: R.map(egs().players, (p, i) =>
+            i === player ? { ...p, lp: Math.max(0, p.lp - m.amount) } : p,
+          ),
+        };
+
+        gs().queueEvent({
+          event: { type: "lpDamage", amount: m.amount, player },
+          nextState,
+        });
         break;
       }
       case OcgMessageType.RETRY: {

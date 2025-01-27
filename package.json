@@ -13,6 +13,7 @@
   "devDependencies": {
     "@libsql/client": "^0.14.0",
     "@react-spring/three": "^9.7.5",
+    "@react-spring/web": "^9.7.5",
     "@react-three/drei": "10.0.0-rc.0",
     "@react-three/fiber": "9.0.0-rc.4",
     "@react-three/postprocessing": "3.0.0-rc.0",
@@ -29,7 +30,7 @@
     "framer-motion": "^11.18.0",
     "immer": "^10.1.1",
     "next": "^15.1.6",
-    "ocgcore-wasm": "^0.0.33",
+    "ocgcore-wasm": "^0.0.34",
     "postcss": "^8.5.1",
     "prettier": "^3.4.2",
     "prettier-plugin-organize-imports": "^4.1.0",

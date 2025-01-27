@@ -1,8 +1,8 @@
-import { OcgCardData, OcgType } from "ocgcore-wasm";
 import { createClient } from "@libsql/client";
-import { sql, inArray, eq } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle, LibSQLDatabase } from "drizzle-orm/libsql";
-import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { OcgCardData, OcgType } from "ocgcore-wasm";
 
 const $ = {
   text: sqliteTable("texts", {
@@ -43,6 +43,7 @@ const $ = {
 
 export type CardsDatabase = {
   db: LibSQLDatabase<typeof $>;
+  getCard: (code: number) => Promise<CardData | null>;
   getCards: (codes: number[]) => Promise<CardData[]>;
 };
 
@@ -53,6 +54,7 @@ export async function loadCardsDatabase(path: string): Promise<CardsDatabase> {
   await db.run(sql`select 1`);
   return {
     db,
+    getCard: (code) => loadCardsData(db, [code]).then((l) => l.at(0) ?? null),
     getCards: (codes) => loadCardsData(db, codes),
   };
 }
@@ -67,7 +69,7 @@ export type CardData = {
 
 export async function loadCardsData(
   db: LibSQLDatabase<typeof $>,
-  cardCodes: number[]
+  cardCodes: number[],
 ) {
   const values = await db
     .select({ data: $.data, text: $.text })
@@ -76,8 +78,8 @@ export async function loadCardsData(
     .where(
       inArray(
         $.data.id,
-        cardCodes.map((c) => BigInt(c))
-      )
+        cardCodes.map((c) => BigInt(c)),
+      ),
     );
   const ret: CardData[] = [];
 
@@ -112,8 +114,8 @@ export async function loadCardsData(
       desc: value.text.desc,
       strings: Array.from(
         { length: 16 },
-        (_, i) => value.text[`str${i + 1}` as Indexes]
-      ),
+        (_, i) => value.text[`str${i + 1}` as Indexes],
+      ).filter((v, i, a) => v || a.slice(i + 1).some((x) => !!x)),
     });
   }
 

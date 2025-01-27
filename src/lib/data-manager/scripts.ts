@@ -11,7 +11,7 @@ export function createScriptsCache(scriptsDataPath: string) {
         try {
           contents = await readFile(`${scriptsDataPath}/${path}`, "utf-8");
         } catch (e) {
-          console.warn(e);
+          console.warn("missing script", path);
           contents = "";
         }
         scriptsCache.set(path, contents);
@@ -31,7 +31,7 @@ async function preloadedBaseScripts(scriptsDataPath: string) {
     files.map(async (f) => {
       const contents = await readFile(`${scriptsDataPath}/${f}`, "utf-8");
       return [f, contents] as const;
-    })
+    }),
   );
   return new Map(entries);
 }
