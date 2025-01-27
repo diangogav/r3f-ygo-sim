@@ -20,6 +20,9 @@ export const degToRad = Math.PI / 180;
 
 export const fieldRotation = 15;
 
+const cardScale = 2.5;
+const cardRatio = 271 / 395;
+
 const fieldEuler = [
   new Euler(-fieldRotation * degToRad, 0, 0),
   new Euler(-fieldRotation * degToRad, 0, 180 * degToRad),
@@ -48,17 +51,28 @@ export const getCardPositionObj = (() => {
   const rotFinal = new Euler();
 
   return function getCardPositionObj(
-    { pos, position }: CardInfo,
+    { pos, position, overlaySize, materials }: CardInfo,
     sizes: ControllerSizes,
   ) {
-    const { controller, location } = pos;
+    const { controller, location, overlay } = pos;
 
     let faceDown = position === "down_atk" || position === "down_def";
     const defense = position === "down_def" || position === "up_def";
 
     if (isFieldLocation(location)) {
-      const [[posX, posY, posZ], [rotX, rotY, rotZ]] =
-        getCardLocalFieldPosition(pos, sizes)!;
+      let [[posX, posY, posZ], [rotX, rotY, rotZ]] = getCardLocalFieldPosition(
+        pos,
+        sizes,
+      )!;
+
+      posZ += materials.length * 0.05;
+      if (overlay !== null) {
+        posZ += overlay * 0.05;
+        const posXFrom = posX - (cardScale - cardScale * cardRatio) / 2;
+        const posXTo = posX + (cardScale - cardScale * cardRatio) / 2;
+        posX += posXFrom + (posXTo - posXFrom) * (overlay / (overlaySize - 1));
+      }
+
       vec.set(posX, posY, posZ);
       rot.set(rotX, rotY, rotZ);
 
@@ -66,10 +80,10 @@ export const getCardPositionObj = (() => {
       vecFinal.applyEuler(fieldEuler[controller]);
       rotFinal.copy(rot);
 
-      if (faceDown) {
+      if (overlay === null && faceDown) {
         rotFinal.y += 180 * degToRad;
       }
-      if (defense && location !== "extra") {
+      if (overlay === null && defense && location !== "extra") {
         rotFinal.z += 90 * degToRad;
       }
 
@@ -243,7 +257,8 @@ export function useComputeCardPosition(card: CardInfo) {
     global.set(getCardPositionObj(card, sizes));
     offset.stop(true);
     offset.set({ py: 0 });
-  }, [controller, location, overlay, sequence, position, sizes]);
+  });
+  // }, [controller, location, overlay, sequence, position, sizes]);
 
   return { g: global, o: offset };
 }

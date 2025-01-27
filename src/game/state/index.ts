@@ -74,6 +74,8 @@ export interface CardInfo {
   code: number;
   pos: CardPos;
   position: CardPosition;
+  materials: CardInfo[];
+  overlaySize: number;
 }
 
 export type PartialCardInfo = Pick<CardInfo, "id"> &
@@ -567,8 +569,19 @@ export function getCardWithId(state: Pick<GameState, "players">, id: string) {
 }
 
 export function getCardInPos(
-  state: EventGameState,
-  { controller, location, sequence }: CardPos,
+  state: Pick<EventGameState, "players">,
+  { controller, location, sequence, overlay }: CardPos,
+) {
+  const card = getCardInPosImpl(state, { controller, location, sequence });
+  if (overlay !== null) {
+    return card?.materials.at(overlay) ?? null;
+  }
+  return card;
+}
+
+function getCardInPosImpl(
+  state: Pick<EventGameState, "players">,
+  { controller, location, sequence }: Omit<CardPos, "overlay">,
 ) {
   const { field } = state.players[controller];
   if (location === "fieldZone") {
@@ -580,10 +593,46 @@ export function getCardInPos(
 export function setCard<State extends Pick<GameState, "players">>(
   state: State,
   card: CardInfo | null,
-  { controller, location, sequence }: CardPos,
+  { controller, location, sequence, overlay }: CardPos,
+): State {
+  if (overlay !== null) {
+    const target = getCardInPosImpl(state, { controller, location, sequence });
+    if (!target) {
+      console.warn("failed to set card");
+      return state;
+    }
+
+    const newCard = card
+      ? { ...card, pos: { controller, location, sequence, overlay } }
+      : null;
+
+    const materials = updatePile(target.materials, newCard, overlay, true);
+
+    return setCardImpl(
+      state,
+      { ...target, materials },
+      { controller, location, sequence },
+    );
+  } else {
+    return setCardImpl(state, card, { controller, location, sequence });
+  }
+}
+
+export function setCardImpl<State extends Pick<GameState, "players">>(
+  state: State,
+  card: CardInfo | null,
+  { controller, location, sequence }: Omit<CardPos, "overlay">,
 ): State {
   const newCard: CardInfo | null = card
-    ? { ...card, pos: { ...card.pos, controller, location, sequence } }
+    ? {
+        ...card,
+        pos: { controller, location, sequence, overlay: null },
+        materials: card.materials.map((c) => ({
+          ...c,
+          pos: { ...c.pos, controller, location, sequence },
+          overlaySize: card.materials.length,
+        })),
+      }
     : null;
 
   return {
@@ -601,22 +650,21 @@ export function setCard<State extends Pick<GameState, "players">>(
                   ? updatePile(player.field[location], newCard, sequence)
                   : location === "fieldZone"
                     ? newCard
-                    : updateSlots(player.field[location], newCard, sequence),
+                    : R.map(player.field[location], (c, i) =>
+                        i === sequence ? newCard : c,
+                      ),
               },
             },
     ),
   };
 }
 
-function updateSlots<Slots extends (CardInfo | null)[]>(
-  slots: Slots,
+function updatePile(
+  pile: CardInfo[],
   card: CardInfo | null,
   index: number,
-): Slots {
-  return slots.map((c, i) => (i === index ? card : c)) as Slots;
-}
-
-function updatePile(pile: CardInfo[], card: CardInfo | null, index: number) {
+  isOverlay?: boolean,
+) {
   return recalculateSequence(
     0 <= index && index < pile.length
       ? replaceOrRemove(pile, card, index)
@@ -625,6 +673,7 @@ function updatePile(pile: CardInfo[], card: CardInfo | null, index: number) {
           ? [card, ...pile]
           : [...pile, card]
         : pile,
+    isOverlay,
   );
 }
 
@@ -638,8 +687,15 @@ function replaceOrRemove(
     : arr.filter((_, i) => i !== index);
 }
 
-function recalculateSequence(cards: CardInfo[]): CardInfo[] {
-  return cards.map((c, i) => ({ ...c, pos: { ...c.pos, sequence: i } }));
+function recalculateSequence(
+  cards: CardInfo[],
+  isOverlay?: boolean,
+): CardInfo[] {
+  return cards.map((c, i) => ({
+    ...c,
+    overlaySize: isOverlay ? cards.length : c.overlaySize,
+    pos: { ...c.pos, [isOverlay ? "overlay" : "sequence"]: i },
+  }));
 }
 
 export function isCardPosEqual(a: CardPos, b: CardPos) {

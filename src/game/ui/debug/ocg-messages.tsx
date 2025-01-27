@@ -1,4 +1,5 @@
 import {
+  OcgCardHintType,
   OcgCardLocPos,
   ocgHintTimingParse,
   ocgHintTimingString,
@@ -59,7 +60,39 @@ function messageContent(m: OcgMessage) {
     case OcgMessageType.NEW_PHASE: {
       return <div>{ocgPhaseString.get(m.phase)}</div>;
     }
-    // case OcgMessageType.CARD_HINT
+    case OcgMessageType.CARD_HINT: {
+      switch (m.card_hint) {
+        case OcgCardHintType.DESC_ADD: {
+          return (
+            <div>
+              Description add for card (
+              <span className="bg-white/10 inline-block px-1">
+                {cardLocation(m)}
+              </span>
+              ): "{getDesc(m.description)}"
+            </div>
+          );
+        }
+        case OcgCardHintType.DESC_REMOVE: {
+          return (
+            <div>
+              Description remove for card (
+              <span className="bg-white/10 inline-block px-1">
+                {cardLocation(m)}
+              </span>
+              ): "{getDesc(m.description)}"
+            </div>
+          );
+        }
+        default: {
+          return (
+            <div className="text-xs whitespace-pre">
+              {jsonStringify(omit(m, ["type"]))}
+            </div>
+          );
+        }
+      }
+    }
     case OcgMessageType.HINT: {
       switch (m.hint_type) {
         case OcgHintType.MESSAGE: {
@@ -81,8 +114,8 @@ function messageContent(m: OcgMessage) {
         case OcgHintType.SELECTMSG: {
           return (
             <div>
-              Select for P{m.player + 1}: "{getDesc(m.hint)}" (
-              {m.hint.toString()})
+              Select for P{m.player + 1}: "{getDesc(m.hint)}" or "
+              {getCardName(Number(m.hint))}" ({m.hint.toString()})
             </div>
           );
         }
@@ -148,6 +181,24 @@ function messageContent(m: OcgMessage) {
           <div>To BP: {bool(m.to_bp)}</div>
           <div>To EP: {bool(m.to_ep)}</div>
           <div>Can Shuffle: {bool(m.shuffle)}</div>
+        </>
+      );
+    }
+    case OcgMessageType.SELECT_UNSELECT_CARD: {
+      return (
+        <>
+          <div>
+            P{m.player + 1} selects from {m.min} to {m.max} cards.
+          </div>
+          <div>
+            Can finish: {bool(m.can_finish)}, can cancel: {bool(m.can_cancel)}
+          </div>
+          <div>
+            Selectable: {join(m.select_cards.map((s) => card(s.code, s)))}
+          </div>
+          <div>
+            Diselectable {join(m.unselect_cards.map((s) => card(s.code, s)))}
+          </div>
         </>
       );
     }

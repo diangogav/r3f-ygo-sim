@@ -8,6 +8,7 @@ import {
 import { RefObject, useEffect } from "react";
 import { gs } from "./runner";
 import {
+  CardInfo,
   EventGameState,
   extractEventGS,
   isCardPosEqual,
@@ -15,7 +16,6 @@ import {
   isFieldNotPileLocation,
   useGameStore,
 } from "./state";
-import { DuelEventMove } from "./state/event";
 import { getCardPositionObj, getPlayerSizes } from "./utils/position";
 
 export interface CardAnimationsProps {
@@ -56,7 +56,10 @@ export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
       case "move": {
         const from = event.card.pos;
         const to = event.nextCard.pos;
-        animateMove(event, context);
+        animateMove(event.card, event.nextCard, context);
+        for (const [index, card] of event.card.materials.entries()) {
+          animateMove(card, event.nextCard.materials[index], context);
+        }
         if (from.location === "hand") {
           animateReorderHand(from.controller, context);
         }
@@ -247,18 +250,25 @@ function animateShuffleHand(controller: 0 | 1, c: AnimationContext) {
   }
 }
 
-function animateMove(event: DuelEventMove, c: AnimationContext) {
-  const controller = event.nextCard.pos.controller;
+function animateMove(card: CardInfo, nextCard: CardInfo, c: AnimationContext) {
+  const controller = nextCard.pos.controller;
   const nextSizes = getPlayerSizes(c.nextState.players[controller]);
-  const newPos = getCardPositionObj(event.nextCard, nextSizes);
-  const api = c.cardApis.get(event.card.id)!;
+  const newPos = getCardPositionObj(nextCard, nextSizes);
+  const api = c.cardApis.get(card.id)!;
 
   const speed = 300;
 
+  c.runAnimation(api, {
+    ...newPos,
+    config: { duration: speed, easing: easings.easeInOutQuad },
+    delay: 0,
+  });
+  return;
+
   let oanim: ControllerUpdate<ControllerStateOffset> | undefined = undefined;
   if (
-    isCardPosEqual(event.card.pos, event.nextCard.pos) &&
-    isFaceup(event.card.position) !== isFaceup(event.nextCard.position)
+    isCardPosEqual(card.pos, nextCard.pos) &&
+    isFaceup(card.position) !== isFaceup(nextCard.position)
   ) {
     oanim = {
       to: [
@@ -278,8 +288,8 @@ function animateMove(event: DuelEventMove, c: AnimationContext) {
   }
 
   if (
-    !isFieldNotPileLocation(event.card.pos.location) &&
-    isFieldNotPileLocation(event.nextCard.pos.location)
+    !isFieldNotPileLocation(card.pos.location) &&
+    isFieldNotPileLocation(nextCard.pos.location)
   ) {
     c.runAnimation(
       api,

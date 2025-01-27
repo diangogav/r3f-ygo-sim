@@ -350,6 +350,8 @@ function ChainLinkIndicator({ trigger }: ChainLinkIndicatorProps) {
           overlay: null,
         },
         position: "up_atk",
+        overlaySize: 0,
+        materials: [],
       },
       sizes,
     );
@@ -982,7 +984,7 @@ function RenderCard({
   cardMotionValuesRef,
 }: RenderCardProps) {
   let {
-    pos: { controller, location, sequence },
+    pos: { controller, location, sequence, overlay },
   } = card;
 
   const setSelectedCard = useGameStore((s) => s.setSelectedCard);
@@ -1013,8 +1015,9 @@ function RenderCard({
     updateHover(false);
   });
 
-  const isTop = isPileTop(location, sequence, sizes);
-  const isInteractive = isDirectInteractionLocation(location) || isTop;
+  const isTop = overlay === null && isPileTop(location, sequence, sizes);
+  const isInteractive =
+    (overlay === null && isDirectInteractionLocation(location)) || isTop;
 
   const onClick = useEventCallback((e: ThreeEvent<MouseEvent>) => {
     setSelectedCard({ pos: card.pos, code: card.code });
@@ -1406,6 +1409,7 @@ function useAllCards() {
       ret.push(...p.field.extra);
       ret.push(...p.field.banish);
     }
+    ret.push(...ret.flatMap((c) => c.materials));
     return ret;
   }, [players]);
 }

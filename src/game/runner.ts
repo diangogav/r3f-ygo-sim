@@ -261,6 +261,7 @@ function convertLocation({
   controller,
   location,
   sequence,
+  overlay_sequence,
 }: Omit<OcgCardLocPos, "position" | "code">): CardPos | null {
   switch (location) {
     case OcgLocation.DECK:
@@ -268,14 +269,14 @@ function convertLocation({
         controller: controller as 0 | 1,
         location: "deck",
         sequence,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     case OcgLocation.HAND:
       return {
         controller: controller as 0 | 1,
         location: "hand",
         sequence,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     case OcgLocation.MZONE:
       if (0 <= sequence && sequence < 5) {
@@ -283,7 +284,7 @@ function convertLocation({
           controller: controller as 0 | 1,
           location: "mainMonsterZone",
           sequence,
-          overlay: null,
+          overlay: overlay_sequence ?? null,
         };
       }
       if (sequence === 5 || sequence === 6) {
@@ -291,7 +292,7 @@ function convertLocation({
           controller: controller as 0 | 1,
           location: "extraMonsterZone",
           sequence: sequence - 5,
-          overlay: null,
+          overlay: overlay_sequence ?? null,
         };
       }
       return null;
@@ -301,7 +302,7 @@ function convertLocation({
           controller: controller as 0 | 1,
           location: "spellZone",
           sequence,
-          overlay: null,
+          overlay: overlay_sequence ?? null,
         };
       }
       if (sequence === 5) {
@@ -309,7 +310,7 @@ function convertLocation({
           controller: controller as 0 | 1,
           location: "fieldZone",
           sequence: 0,
-          overlay: null,
+          overlay: overlay_sequence ?? null,
         };
       }
       return null;
@@ -318,28 +319,28 @@ function convertLocation({
         controller: controller as 0 | 1,
         location: "grave",
         sequence,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     case OcgLocation.REMOVED:
       return {
         controller: controller as 0 | 1,
         location: "banish",
         sequence,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     case OcgLocation.EXTRA:
       return {
         controller: controller as 0 | 1,
         location: "extra",
         sequence,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     case OcgLocation.FZONE:
       return {
         controller: controller as 0 | 1,
         location: "fieldZone",
         sequence: 0,
-        overlay: null,
+        overlay: overlay_sequence ?? null,
       };
     default:
       return null;
@@ -638,7 +639,14 @@ export function runSimulatorStep() {
           // new card
           const nextState = setCard(
             egs(),
-            { id: crypto.randomUUID(), code, position, pos: dest },
+            {
+              id: crypto.randomUUID(),
+              code,
+              position,
+              pos: dest,
+              materials: [],
+              overlaySize: 0,
+            },
             dest,
           );
           const nextCard = getCardInPos(nextState, dest)!;
@@ -1109,6 +1117,8 @@ function setupPile(
         code: 0,
         pos: { controller, location: loc, sequence: i, overlay: null },
         position: "down_atk",
+        materials: [],
+        overlaySize: 0,
       }) satisfies CardInfo,
   );
 }

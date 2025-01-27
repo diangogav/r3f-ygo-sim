@@ -23,6 +23,7 @@
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "@types/three": "^0.172.0",
+    "@uiw/react-json-view": "2.0.0-alpha.30",
     "@xpd/tailwind-3dtransforms": "^1.0.3",
     "autoprefixer": "^10.4.20",
     "clsx": "^2.1.1",
