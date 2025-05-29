@@ -180,6 +180,11 @@ export interface DialogConfigSelectUnselect extends DialogConfigBase {
   }[];
 }
 
+export interface DialogConfigSelectTribute extends DialogConfigBase {
+  type: "tribute";
+  // TODO
+}
+
 export interface DialogConfigSelectOption extends DialogConfigBase {
   type: "option";
   options: {
@@ -196,6 +201,7 @@ export type DialogConfig =
   | DialogConfigActionMany
   | DialogConfigPosition
   | DialogConfigSelectUnselect
+  | DialogConfigSelectTribute
   | DialogConfigSelectOption;
 
 export interface PlayerState {

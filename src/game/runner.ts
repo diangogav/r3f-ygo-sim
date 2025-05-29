@@ -1,12 +1,10 @@
-import {
-  LoadDeckResponse,
-  LoadDeckResponseCard,
-} from "@/app/api/loadDeck/route";
+import { LoadDeckResponseCard } from "@/app/api/loadDeck/route";
+import { delay } from "@/lib/delay";
 import { useTexture } from "@react-three/drei";
 import createCore, {
   OcgCardLoc,
   OcgCardLocPos,
-  OcgCoreSync,
+  OcgCore,
   OcgDuelHandle,
   OcgDuelMode,
   OcgHintType,
@@ -27,6 +25,7 @@ import createCore, {
 import * as R from "remeda";
 import { arrayShuffle } from "../lib/array-shuffle";
 import { xoshiro256ss } from "../lib/xoshiro256ss";
+import { actionGetCards, actionGetScripts, actionLoadDeck } from "./server";
 import {
   CardAction,
   CardFieldPos,
@@ -46,16 +45,16 @@ import {
 } from "./state";
 import { textureCardFront } from "./textures";
 
-const coreUrl = new URL("ocgcore-wasm/lib/ocgcore.sync.wasm", import.meta.url);
-let ocg: OcgCoreSync | null = null;
+const coreUrl = new URL("ocgcore-wasm/lib/ocgcore.jspi.wasm", import.meta.url);
+let ocg: OcgCore | null = null;
 const libPromise = initializeCore();
 
 // TODO: expose inside the state maybe?
 
 export let gameInstance: OcgDuelHandle | null = null;
 export const loadedData = {
-  cards: new Map<number, LoadDeckResponseCard>(),
-  scripts: new Map<string, string>(),
+  cards: new Map<number, LoadDeckResponseCard | null>(),
+  scripts: new Map<string, string | null>(),
   strings: {
     system: new Map<number, string>(),
     counter: new Map<number, string>(),
@@ -80,16 +79,13 @@ export async function createGame(
 ) {
   gameInstance = null;
 
+  await delay(1);
+
   const [deckData] = await Promise.all([
-    fetch(`/api/loadDeck`, {
-      method: "post",
-      body: JSON.stringify({
-        player1: { deck: options.player1.deck },
-        player2: { deck: options.player2.deck },
-      }),
-      headers: { "content-type": "application/json" },
-      signal,
-    }).then((r) => r.json() as Promise<LoadDeckResponse>),
+    actionLoadDeck({
+      player1: { deck: options.player1.deck },
+      player2: { deck: options.player2.deck },
+    }),
     libPromise,
   ]);
 
@@ -109,9 +105,9 @@ export async function createGame(
   };
 
   const seed = R.map(options.seed, BigInt);
-  const duel = ocg.createDuel({
-    cardReader(card) {
-      const data = loadedData.cards.get(card)?.data;
+  const duel = await ocg.createDuel({
+    async cardReader(card) {
+      const data = await getCardData(card);
       if (!data) {
         console.log("missing data", card);
         return null;
@@ -121,8 +117,11 @@ export async function createGame(
         race: BigInt(data.race),
       };
     },
-    scriptReader(name) {
-      const script = loadedData.scripts.get(name);
+    async scriptReader(name) {
+      if (name.match(/^c\d+\.lua$/)) {
+        name = `official/${name}`;
+      }
+      const script = await getScript(name);
       if (!script) {
         console.log("missing script", name);
         return "";
@@ -141,23 +140,23 @@ export async function createGame(
     throw new Error("error creating duel");
   }
 
-  ocg.loadScript(
+  await ocg.loadScript(
     duel,
     "constant.lua",
     loadedData.scripts.get("constant.lua") ?? "",
   );
-  ocg.loadScript(
+  await ocg.loadScript(
     duel,
     "utility.lua",
     loadedData.scripts.get("utility.lua") ?? "",
   );
 
   const player1Deck = shufflePile(deckData.player1.deck.main, seed);
-  loadPile(duel, 0, OcgLocation.DECK, player1Deck);
-  loadPile(duel, 0, OcgLocation.EXTRA, deckData.player1.deck.extra);
+  await loadPile(duel, 0, OcgLocation.DECK, player1Deck);
+  await loadPile(duel, 0, OcgLocation.EXTRA, deckData.player1.deck.extra);
   const player2Deck = shufflePile(deckData.player2.deck.main, seed);
-  loadPile(duel, 1, OcgLocation.DECK, player2Deck);
-  loadPile(duel, 1, OcgLocation.EXTRA, deckData.player2.deck.extra);
+  await loadPile(duel, 1, OcgLocation.DECK, player2Deck);
+  await loadPile(duel, 1, OcgLocation.EXTRA, deckData.player2.deck.extra);
 
   useGameStore.setState({
     ...useGameStore.getInitialState(),
@@ -209,13 +208,13 @@ export async function createGame(
     ],
   });
 
-  ocg.startDuel(duel);
+  await ocg.startDuel(duel);
 
   gameInstance = duel;
   return duel;
 }
 
-function loadPile(
+async function loadPile(
   duel: OcgDuelHandle,
   player: 0 | 1,
   location: OcgLocation,
@@ -230,10 +229,10 @@ function loadPile(
     position: OcgPosition.FACEDOWN_ATTACK,
     sequence: 0,
   };
-  cards.forEach((c) => {
-    base.code = c;
-    ocg!.duelNewCard(duel, base);
-  });
+  for (const card of cards) {
+    base.code = card;
+    await ocg!.duelNewCard(duel, base);
+  }
 }
 
 function shufflePile(deck: number[], state: [bigint, bigint, bigint, bigint]) {
@@ -392,14 +391,14 @@ export function gs() {
   return useGameStore.getState();
 }
 
-export function runSimulatorStep() {
+export async function runSimulatorStep() {
   if (!ocg || !gameInstance) {
     return;
   }
 
   const messages: OcgMessage[] = [];
   while (true) {
-    const res = ocg.duelProcess(gameInstance);
+    const res = await ocg.duelProcess(gameInstance);
     for (const m of ocg.duelGetMessage(gameInstance)) {
       messages.push(m);
     }
@@ -940,6 +939,16 @@ export function runSimulatorStep() {
         });
         break;
       }
+      case OcgMessageType.SELECT_TRIBUTE: {
+        gs().openDialog({
+          id: crypto.randomUUID(),
+          title: `Select/unselect cards`,
+          type: "tribute",
+          player: m.player as 0 | 1,
+        });
+        // TODO
+        break;
+      }
       case OcgMessageType.HINT: {
         switch (m.hint_type) {
           case OcgHintType.MESSAGE: {
@@ -1064,6 +1073,41 @@ export function sendResponse(resp: OcgResponse) {
   ocg.duelSetResponse(gameInstance, resp);
 }
 
+export async function getCard(cardCode: number) {
+  let data = loadedData.cards.get(cardCode);
+  if (!data) {
+    const [cards, scripts] = await actionGetCards({ codes: [cardCode] });
+    for (const card of cards) {
+      loadedData.cards.set(card.id, card);
+      if (card.id === cardCode) {
+        data = card;
+      }
+    }
+    for (const [path, script] of scripts) {
+      loadedData.scripts.set(path, script);
+    }
+  }
+  return data ?? null;
+}
+
+export async function getCardData(cardCode: number) {
+  return (await getCard(cardCode))?.data ?? null;
+}
+
+export async function getScript(scriptPath: string) {
+  let content = loadedData.scripts.get(scriptPath);
+  if (content === undefined) {
+    const scripts = await actionGetScripts({ paths: [scriptPath] });
+    for (const [path, script] of scripts) {
+      loadedData.scripts.set(path, script);
+      if (scriptPath === path) {
+        content = script;
+      }
+    }
+  }
+  return content ?? "";
+}
+
 export function getDesc(inCode: bigint | number): string | null {
   const code = Number(
     typeof inCode === "bigint" ? inCode >> 20n : inCode >> 20,
@@ -1131,7 +1175,6 @@ async function initializeCore() {
       }
       return scriptDirectory + url;
     },
-    sync: true,
   });
   const [maj, min] = ocg.getVersion();
   console.log(`core initialized (v${maj}.${min})`);

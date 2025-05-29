@@ -1,4 +1,10 @@
 import { readFile, readdir } from "fs/promises";
+import { join, normalize } from "path";
+
+function safeJoin(base: string, suffix: string) {
+  var safeSuffix = normalize(suffix).replace(/^(\.\.(\/|\\|$))+/, "");
+  return join(base, safeSuffix);
+}
 
 export function createScriptsCache(scriptsDataPath: string) {
   const scriptsCache = new Map<string, string>();
@@ -9,7 +15,7 @@ export function createScriptsCache(scriptsDataPath: string) {
       let contents = scriptsCache.get(path);
       if (!contents) {
         try {
-          contents = await readFile(`${scriptsDataPath}/${path}`, "utf-8");
+          contents = await readFile(safeJoin(scriptsDataPath, path), "utf-8");
         } catch (e) {
           console.warn("missing script", path);
           contents = "";

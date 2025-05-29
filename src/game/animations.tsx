@@ -4,7 +4,7 @@ import {
   Controller,
   ControllerUpdate,
   easings,
-} from "@react-spring/three";
+} from "@react-spring/core";
 import { RefObject, useEffect } from "react";
 import { gs } from "./runner";
 import {

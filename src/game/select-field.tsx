@@ -1,4 +1,5 @@
-import { animated, useSpring } from "@react-spring/three";
+import { animated3 } from "@/lib/spring";
+import { useSpring } from "@react-spring/core";
 import { useTexture } from "@react-three/drei";
 import { OcgResponseType } from "ocgcore-wasm";
 import { ComponentProps, Suspense, useState } from "react";
@@ -122,7 +123,7 @@ function RenderSelectFieldSlot({
   );
 }
 
-const AnimatedMeshStandardMaterial = animated("meshStandardMaterial");
+const AnimatedMeshStandardMaterial = animated3("meshStandardMaterial");
 
 function MaterialSelectFieldSlot(
   props: ComponentProps<typeof AnimatedMeshStandardMaterial>,

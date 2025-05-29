@@ -498,9 +498,9 @@ function GameInitializer({}: GameInitializerProps) {
         textureSlot,
         textureCardBack,
         textureHighlight,
-        ...Array.from(loadedData.cards.values(), (c) =>
-          textureCardFront(c.data.code),
-        ),
+        ...Array.from(loadedData.cards.values())
+          .filter((c) => !!c)
+          .map((c) => textureCardFront(c.data.code)),
       ]);
       setInitPhase(1);
     }

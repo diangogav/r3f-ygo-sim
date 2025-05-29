@@ -1,4 +1,4 @@
-import { Controller, easings, useSpring } from "@react-spring/three";
+import { Controller, easings, useSpringValue } from "@react-spring/core";
 import { useEffect, useState } from "react";
 import * as R from "remeda";
 import { Euler, Vector3 } from "three";
@@ -289,15 +289,18 @@ export function useHandOffset(card: CardInfo) {
     hz = selected ? (handSize + 1) * 0.01 : isHover ? handSize * 0.01 : 0;
   }
 
-  const springs = useSpring({
-    hy,
-    hz,
-    hs,
-    config: {
-      ease: easings.easeInOutQuad,
-      duration: 150,
-    },
-  });
+  const config = { ease: easings.easeInOutQuad, duration: 150 };
+  const springs = {
+    hy: useSpringValue(hy, { config }),
+    hz: useSpringValue(hz, { config }),
+    hs: useSpringValue(hs, { config }),
+  };
+
+  useEffect(() => {
+    springs.hy.start(hy);
+    springs.hz.start(hz);
+    springs.hs.start(hs);
+  }, [hy, hz, hs]);
 
   return {
     springs,

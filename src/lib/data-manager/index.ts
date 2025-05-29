@@ -22,6 +22,19 @@ const scriptsCache = createScriptsCache(scriptsDataPath);
 
 const cardsCache = new Map<number, CardData>();
 
+export async function getScripts(
+  paths: string[],
+): Promise<Map<string, string>> {
+  return new Map(
+    await Promise.all(
+      paths.map(async (path) => {
+        const script = await scriptsCache.get(path);
+        return [path, script] as const;
+      }),
+    ),
+  );
+}
+
 export async function getCards(
   cardCodes: number[],
 ): Promise<[CardData[], Map<string, string>]> {
@@ -45,15 +58,8 @@ export async function getCards(
     cards.push(...(await db.getCards(toRequest)));
     return cards;
   })();
-
-  const scripts = new Map(
-    await Promise.all(
-      cards.map(async (card) => {
-        const path = `c${card.data.alias || card.id}.lua`;
-        const script = await scriptsCache.get(`official/${path}`);
-        return [path, script] as const;
-      }),
-    ),
+  const scripts = await getScripts(
+    cards.map((card) => `official/c${card.data.alias || card.id}.lua`),
   );
   return [cards, scripts];
 }
@@ -78,6 +84,16 @@ export async function getAllReferencedCards(context: {
   const set = new Set<number>();
 
   const addToSet = async (id: number) => {
+    const data = context.cards.get(id);
+    if (data?.data.alias && !context.cards.has(data.data.alias)) {
+      const aliasId = data.data.alias;
+      const dbCard = await db.getCard(aliasId);
+      if (dbCard) {
+        context.cards.set(aliasId, dbCard);
+        set.add(aliasId);
+      }
+    }
+
     for (const card of await getReferencedCards(id)) {
       if (typeof card === "number" && !context.cards.has(card)) {
         const dbCard = await db.getCard(card);
