@@ -88,7 +88,6 @@ export function CardAnimations({ cardMotionValuesRef }: CardAnimationsProps) {
     let complete = false;
     Promise.allSettled(context.promises)
       .then((results) => {
-        // console.log(results);
         const cancelled = results.filter(
           (r) => r.status === "fulfilled" && r.value.cancelled,
         );

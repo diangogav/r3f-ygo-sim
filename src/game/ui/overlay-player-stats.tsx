@@ -1,5 +1,6 @@
 import { cn } from "@/lib/cn";
-import { animated, useSpring, useTransition } from "@react-spring/web";
+import { animatedWeb } from "@/lib/spring";
+import { useSpring, useTransition } from "@react-spring/core";
 import { gs } from "../runner";
 import { useGameEventOfType, useGameStore } from "../state";
 
@@ -16,12 +17,12 @@ export function OverlayPlayerStats({ controller }: OverlayPlayerStatsProps) {
     (e) => e.player === controller,
   );
 
-  const transitions = useTransition(damageEvent ?? null, {
+  const transitions = useTransition(damageEvent ? [damageEvent] : [], {
     from: { opacity: 0, y: "1cqw" },
     enter: { opacity: 1, y: "0cqw" },
     leave: { opacity: 0, y: "-1cqw" },
     keys: (item) => item?.id ?? "none",
-    onRest(result: any, ctrl: any, item: null | typeof damageEvent) {
+    onRest(result, _ctrl, item) {
       if (!item) {
         return;
       }
@@ -73,4 +74,4 @@ export function OverlayPlayerStats({ controller }: OverlayPlayerStatsProps) {
   );
 }
 
-const AnimatedDiv = animated("div");
+const AnimatedDiv = animatedWeb("div");

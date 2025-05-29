@@ -1,6 +1,18 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+}
+
+@custom-variant horizontal {
+  @media (min-aspect-ratio: 16/9) {
+    @slot;
+  }
+}
+@custom-variant vertical {
+  @media (max-aspect-ratio: 16/9) {
+    @slot;
+  }
+}
 
 body,
 html {

@@ -1,5 +1,5 @@
 import { createClient } from "@libsql/client";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle, LibSQLDatabase } from "drizzle-orm/libsql";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { OcgCardData, OcgType } from "ocgcore-wasm";
@@ -51,7 +51,7 @@ export async function loadCardsDatabase(path: string): Promise<CardsDatabase> {
   const db = drizzle(createClient({ url: `file:${path}`, intMode: "bigint" }), {
     schema: $,
   });
-  await db.run(sql`select 1`);
+  await db.run("select 1");
   return {
     db,
     getCard: (code) => loadCardsData(db, [code]).then((l) => l.at(0) ?? null),

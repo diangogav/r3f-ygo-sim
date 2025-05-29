@@ -1,13 +1,13 @@
 "use client";
 
+import { animated3, animatedWeb } from "@/lib/spring";
 import {
-  animated,
   easings,
   SpringValue,
   to,
   useSpring,
   useTransition,
-} from "@react-spring/three";
+} from "@react-spring/core";
 import {
   Html,
   PerspectiveCamera,
@@ -16,9 +16,14 @@ import {
   useTexture,
 } from "@react-three/drei";
 import { Canvas, extend, ThreeElements, ThreeEvent } from "@react-three/fiber";
-import { Bloom, EffectComposer, Vignette } from "@react-three/postprocessing";
+import {
+  Bloom,
+  EffectComposer,
+  N8AO,
+  SMAA,
+  Vignette,
+} from "@react-three/postprocessing";
 import { useQuery } from "@tanstack/react-query";
-import { animate, AnimatePresence, motion } from "framer-motion";
 import { OcgDuelHandle, OcgPosition, OcgResponseType } from "ocgcore-wasm";
 import {
   ComponentProps,
@@ -256,14 +261,14 @@ function GameCards({ wrapperRef, cardMotionValuesRef }: GameCardsProps) {
       onRest(result, ctrl, item) {
         if (result.value.opacity === 1) {
           // enter
-          if (item.id === newCard?.event.card.id) {
+          if (item!.id === newCard?.event.card.id) {
             gs().nextEvent();
             console.log("NEWCARD NEXT EVENT", result, ctrl);
           }
         }
         if (result.value.opacity === 0) {
           // leave
-          if (item.id === removeCard?.event.card.id) {
+          if (item!.id === removeCard?.event.card.id) {
             gs().nextEvent();
             console.log("REMOVE CARD NEXT EVENT", result, ctrl);
           }
@@ -393,7 +398,7 @@ function ChainLinkIndicator({ trigger }: ChainLinkIndicatorProps) {
   );
 }
 
-const AnimatedMesh = animated("mesh");
+const AnimatedMesh = animated3("mesh");
 
 function ChainLinkIndicatorMaterial() {
   const texture = useTexture(textureChain);
@@ -518,51 +523,49 @@ function HtmlTurnState({}: {}) {
 
   const [animationPhase, setAnimationPhase] = useState(0);
 
-  return (
-    <AnimatePresence mode="wait">
-      {event &&
-        (event.event.type === "start" || event.event.type === "phase") &&
-        animationPhase === 0 && (
-          <motion.div
-            key={event.id}
-            className="absolute z-10 inset-0 flex items-center justify-center"
-          >
-            <motion.div
-              className="relative text-[10cqh] text-white font-bold"
-              initial="initial"
-              animate="enter"
-              exit="exit"
-              variants={{
-                initial: { x: "20cqw", opacity: 0 },
-                enter: { x: "0", opacity: 1 },
-                exit: { x: "20cqw", opacity: 0 },
-              }}
-              transition={{ duration: 0.2 }}
-              onAnimationComplete={(def) => {
-                if (def === "enter") {
-                  setTimeout(() => setAnimationPhase(1), 200);
-                }
-                if (def === "exit") {
-                  useGameStore.getState().nextEvent();
-                  setAnimationPhase(0);
-                }
-              }}
-            >
-              {event.event.type === "start"
-                ? "DUEL START!"
-                : event.nextState.phase}
-            </motion.div>
-          </motion.div>
-        )}
-    </AnimatePresence>
-  );
+  const transitionEvent =
+    event &&
+    (event.event.type === "start" || event.event.type === "phase") &&
+    animationPhase === 0
+      ? event
+      : null;
+
+  const transition = useTransition(transitionEvent ? [transitionEvent] : [], {
+    keys: (e) => e.id,
+    from: { x: "20cqw", opacity: 0 },
+    enter: () => ({ x: "0", opacity: 1 }),
+    leave: () => ({ x: "20cqw", opacity: 0 }),
+    config: () => ({ duration: 200 }),
+    onRest(result, _ctrl, _item) {
+      // enter
+      if (result.value.opacity === 1) {
+        setTimeout(() => setAnimationPhase(1), 200);
+      }
+      // leave
+      if (result.value.opacity === 0) {
+        useGameStore.getState().nextEvent();
+        setAnimationPhase(0);
+      }
+    },
+  });
+
+  return transition((style, item) => (
+    <div className="absolute z-10 inset-0 flex items-center justify-center">
+      <animatedWeb.div
+        className="relative text-[10cqh] text-white font-bold"
+        style={{ x: style.x, opacity: style.opacity }}
+      >
+        {item.event.type === "start" ? "DUEL START!" : item.nextState.phase}
+      </animatedWeb.div>
+    </div>
+  ));
 }
 
 function Effects() {
   return (
     <EffectComposer>
-      {/* <N8AO intensity={1} distanceFalloff={1} /> */}
-      {/* <SMAA /> */}
+      <N8AO intensity={1} distanceFalloff={1} />
+      <SMAA />
       <Bloom />
       <Vignette />
     </EffectComposer>
@@ -573,41 +576,41 @@ function RenderDialog() {
   const idle = useGameStore((s) => s.events.length === 0);
   const dialog = useGameStore((s) => s.dialog);
 
-  return (
-    <AnimatePresence>
-      {idle && dialog && (
-        <motion.div
-          key={dialog.id}
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <div className="bg-zinc-500 p-[1cqw] text-[1.5cqw] rounded-[1cqw]">
-            <div className="text-center text-xs">
-              (for player P{dialog.player + 1})
-            </div>
-            <div className="text-center">{dialog.title}</div>
-            {(dialog.type === "yesno" || dialog.type === "effectyn") && (
-              <DialogSelectYesNo dialog={dialog} />
-            )}
-            {dialog.type === "selectUnselect" && (
-              <DialogSelectUnselect dialog={dialog} />
-            )}
-            {dialog.type === "cards" && <DialogSelectCard dialog={dialog} />}
-            {dialog.type === "chain" && <DialogSelectChain dialog={dialog} />}
-            {dialog.type === "position" && (
-              <DialogSelectPosition dialog={dialog} />
-            )}
-            {dialog.type === "actionMany" && (
-              <DialogSelectActionMany dialog={dialog} />
-            )}
-            {dialog.type === "option" && <DialogSelectOption dialog={dialog} />}
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
+  const transition = useTransition(idle && dialog ? [dialog] : [], {
+    keys: (dialog) => dialog.id,
+    from: { opacity: 0 },
+    enter: () => ({ opacity: 1 }),
+    leave: () => ({ opacity: 0 }),
+    config: () => ({ duration: 200 }),
+  });
+
+  return transition((style, dialog) => (
+    <animatedWeb.div
+      key={dialog.id}
+      style={{ opacity: style.opacity }}
+      className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
+    >
+      <div className="bg-zinc-500 p-[1cqw] text-[1.5cqw] rounded-[1cqw]">
+        <div className="text-center text-xs">
+          (for player P{dialog.player + 1})
+        </div>
+        <div className="text-center">{dialog.title}</div>
+        {(dialog.type === "yesno" || dialog.type === "effectyn") && (
+          <DialogSelectYesNo dialog={dialog} />
+        )}
+        {dialog.type === "selectUnselect" && (
+          <DialogSelectUnselect dialog={dialog} />
+        )}
+        {dialog.type === "cards" && <DialogSelectCard dialog={dialog} />}
+        {dialog.type === "chain" && <DialogSelectChain dialog={dialog} />}
+        {dialog.type === "position" && <DialogSelectPosition dialog={dialog} />}
+        {dialog.type === "actionMany" && (
+          <DialogSelectActionMany dialog={dialog} />
+        )}
+        {dialog.type === "option" && <DialogSelectOption dialog={dialog} />}
+      </div>
+    </animatedWeb.div>
+  ));
 }
 
 type DialogSelectPositionProps = {
@@ -1060,7 +1063,7 @@ function RenderCard({
   );
 }
 
-const AnimatedObject3D = animated("object3D");
+const AnimatedObject3D = animated3("object3D");
 
 interface RenderCardActionsProps {
   card: CardInfo;
@@ -1234,7 +1237,7 @@ const CardTextureMaterial = memo(
   },
 );
 
-const AnimatedMeshStandardMaterial = animated("meshStandardMaterial");
+const AnimatedMeshStandardMaterial = animated3("meshStandardMaterial");
 
 CardTextureMaterial.displayName = "CardTextureMaterial";
 
@@ -1333,48 +1336,32 @@ function AnimatedCardActionsOverlay({
   isGold,
   isBack,
 }: AnimatedCardActionsOverlayProps) {
-  const ref = useRef<Mesh>(null);
-  const refMaterial = useRef<MeshStandardMaterial>(null);
-
   const overlayTexture = useTexture(textureHighlight);
   const color = isGold ? 0xfaf148 : 0x79a6d9;
 
-  useEffect(() => {
-    if (!ref.current || !refMaterial.current) {
-      return;
-    }
-    animate(
-      [
-        [ref.current.scale, { x: [1, 1.005], y: [1, 1.005] }, { at: 0 }],
-        [refMaterial.current, { opacity: [0.8, 0.9] }, { at: 0 }],
-      ],
-      {
-        repeat: Infinity,
-        repeatType: "reverse",
-        duration: 0.5,
-        type: "keyframes",
-        ease: "easeInOut",
-      },
-    );
-  });
+  const [styles] = useSpring(() => ({
+    from: { scaleX: 1, scaleY: 1, opacity: 0.8 },
+    to: { scaleX: 1.005, scaleY: 1.005, opacity: 0.9 },
+    config: { duration: 500, easing: easings.easeInOutCubic },
+    loop: { reverse: true },
+  }));
 
   return (
-    <mesh
-      ref={ref}
+    <animated3.mesh
       rotation-y={isBack ? 180 * degToRad : 0}
       position-z={isBack ? 0.001 : -0.001}
-      scale={1}
+      scale-x={styles.scaleX}
+      scale-y={styles.scaleY}
     >
-      <meshStandardMaterial
-        ref={refMaterial}
+      <animated3.meshStandardMaterial
         color={color}
         alphaMap={overlayTexture}
         depthWrite={false}
-        opacity={0.8}
+        opacity={styles.opacity}
         transparent
       />
       <planeGeometry args={[cardScale * 1.24, cardScale * 1.26, 1]} />
-    </mesh>
+    </animated3.mesh>
   );
 }
 
